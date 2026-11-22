@@ -1,0 +1,4 @@
+# Core CLI, TUI, and Linux GTK3 Menu Bar run with 0 external pip dependencies (stdlib + system PyGObject).
+# Optional cross-platform system tray dependencies for Windows / macOS / Linux:
+Pillow>=9.0.0
+pystray>=0.19.4

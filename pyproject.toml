@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentbar"
+version = "1.0.0"
+description = "Cross-platform Menu Bar / System Tray & Terminal Usage Monitor for Claude Code, Codex, Antigravity, Qoder & AI Coding Engines"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "AgentBar Team"}
+]
+dependencies = []
+
+[project.optional-dependencies]
+tray = [
+    "Pillow>=9.0.0",
+    "pystray>=0.19.4",
+]
+
+[project.scripts]
+agentbar = "agentbar.cli:main"
