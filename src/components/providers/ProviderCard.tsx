@@ -3,6 +3,7 @@ import { formatCost, formatTimestamp, formatTokens } from "../../lib/format";
 import type { ProviderSnapshot } from "../../types/usage";
 import { Button } from "../ui/Button";
 import { StatusBadge } from "../ui/StatusBadge";
+import { AntigravityDetails } from "./AntigravityDetails";
 import { QuotaMeter } from "./QuotaMeter";
 
 interface ProviderCardProps {
@@ -43,6 +44,8 @@ export function ProviderCard({ provider, refreshing = false, onRefresh }: Provid
         <div><dt>Tokens</dt><dd>{formatTokens(provider.tokens?.total ?? null)}</dd></div>
         <div><dt>API-equivalent cost</dt><dd>{formatCost(provider.cost.amountUsd)}</dd></div>
       </dl>
+
+      {provider.providerId === "antigravity" && <AntigravityDetails provider={provider} />}
 
       <footer className="provider-footer">
         <div className="provider-source">

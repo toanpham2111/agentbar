@@ -9,6 +9,8 @@ test("dashboard is responsive, keyboard reachable, and explicitly labeled as dem
   await expect(page.getByRole("heading", { name: "Usage overview" })).toBeVisible();
   await expect(page.getByText(/UI preview mode/i)).toBeVisible();
   await expect(page.getByText("OpenAI Codex")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Google Antigravity", exact: true, level: 4 })).toBeVisible();
+  await expect(page.getByText("Private RPC ports, CSRF tokens, browser cookies, and credentials are never read.")).toBeVisible();
 
   const layout = await page.evaluate(() => {
     const overflow = [...document.querySelectorAll<HTMLElement>("body *")]

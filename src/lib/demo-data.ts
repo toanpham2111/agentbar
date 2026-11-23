@@ -23,10 +23,16 @@ export const demoProviders: ProviderSnapshot[] = [
     cost: { amountUsd: null, kind: "unavailable", pricingVersion: null }, dataSourceLabel: "Demo fixture — not provider data", lastUpdated: null, stale: false,
     message: "Installation detected. Account usage is unsupported without explicit authorization.",
   },
+  {
+    providerId: "antigravity", displayName: "Google Antigravity", installed: true, version: "demo", accountId: null,
+    connection: "partially_supported", quotaWindows: [], tokens: null,
+    cost: { amountUsd: null, kind: "unavailable", pricingVersion: null }, dataSourceLabel: "Demo fixture — installation detection only", lastUpdated: now, stale: false,
+    message: "Usage telemetry is unavailable because Antigravity has no documented non-interactive usage interface.",
+  },
 ];
 
 export const demoSummary: UsageSummary = {
-  detectedProviders: 3, connectedProviders: 3, totalTokens: 2_442_000,
+  detectedProviders: 4, connectedProviders: 4, totalTokens: 2_442_000,
   estimatedCostUsd: null, activeWarnings: 0, lastSuccessfulRefresh: now,
 };
 
