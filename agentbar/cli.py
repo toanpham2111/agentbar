@@ -24,16 +24,16 @@ from .tui import render_ansi_dashboard, run_live_watch
 def _print_install_guide() -> None:
     script_path = Path(__file__).resolve().parent.parent / "agentbar.py"
     print(
-        f"""⚡ AgentBar Cross-Platform Background App & Terminal Guide
+        f"""⚡ Kio Usage Monitoring — Background App & Terminal Guide
 ================================================================
 
-1. Start in Background (Chạy ngầm trên Thanh Menu Bar):
+1. Start in Background:
    agentbar start
 
-2. Open Settings UI (Mở bảng Cài đặt bật/tắt Engine & Tùy chỉnh):
+2. Open Settings UI:
    agentbar settings
 
-3. Stop Background App (Tắt ứng dụng chạy ngầm):
+3. Stop Background App:
    agentbar stop
 
 4. Live Terminal Monitor (htop style for terminal-only workflow):
@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--autostart",
         action="store_true",
-        help="Enable AgentBar to start automatically in background on Desktop login",
+        help="Enable Kio Usage Monitoring to start automatically on login",
     )
     parser.add_argument(
         "-s",
@@ -197,7 +197,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .packaging import install_desktop_app
 
         res = install_desktop_app(autostart=args.autostart)
-        print("⚡ AgentBar Desktop App Packaged & Installed Successfully!")
+        print("⚡ Kio Usage Monitoring packaged and installed successfully!")
         for k, v in res.items():
             print(f"  - {k}: {v}")
         return 0
@@ -205,17 +205,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "start":
         started_new, pid = start_background_daemon(open_settings=args.settings)
         if started_new:
-            print(f"⚡ AgentBar is now running in the background (PID: {pid}).")
+            print(f"⚡ Kio Usage Monitoring is running in the background (PID: {pid}).")
         else:
-            print(f"⚡ AgentBar is already running in the background (PID: {pid}) — toggled window.")
+            print(f"⚡ Kio Usage Monitoring is already running (PID: {pid}) — toggled window.")
         return 0
 
     if args.command == "stop":
         stopped = stop_background_daemon()
         if stopped:
-            print("⏹ AgentBar background daemon stopped.")
+            print("⏹ Kio Usage Monitoring stopped.")
         else:
-            print("AgentBar background daemon is not running.")
+            print("Kio Usage Monitoring is not running.")
         return 0
 
     if args.command == "toggle-bar":
@@ -228,7 +228,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         existing_pid = get_running_daemon_pid()
         if existing_pid is not None:
             start_background_daemon(open_settings=True)
-            print(f"⚙ Opened Settings in running AgentBar instance (PID: {existing_pid}).")
+            print(f"⚙ Opened Kio Usage Monitoring Settings (PID: {existing_pid}).")
             return 0
         return launch_menubar(
             backend=args.backend,

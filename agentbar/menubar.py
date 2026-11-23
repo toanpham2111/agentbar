@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import platform
+import shutil
 import signal
 import sys
 import threading
@@ -29,6 +30,23 @@ from .models import (
     format_reset_countdown,
 )
 from .sni_indicator import LinuxTopPanelIndicator
+
+
+def find_installed_brand_icon(home_dir: Optional[Path] = None) -> Optional[Path]:
+    """Return the installed branded icon without depending on the source checkout."""
+    home = home_dir or Path.home()
+    icon_path = home / ".local" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "kio-usage-monitoring.png"
+    return icon_path if icon_path.is_file() else None
+
+
+def find_installed_provider_icon_dir(home_dir: Optional[Path] = None) -> Optional[Path]:
+    """Return the directory containing official provider icons."""
+    home = home_dir or Path.home()
+    candidates = [
+        home / ".local" / "share" / "agentbar" / "providers",
+        Path("/usr/share/kio-usage-monitoring/providers"),
+    ]
+    return next((icon_dir for icon_dir in candidates if icon_dir.is_dir()), None)
 
 
 def create_tray_icon_image(snapshot: Optional[UsageSnapshot] = None, size: int = 64) -> Any:
@@ -72,26 +90,45 @@ def create_tray_icon_image(snapshot: Optional[UsageSnapshot] = None, size: int =
 def _format_bar_from_config(snapshot: UsageSnapshot, cfg: AgentBarConfig) -> str:
     """Format the top menu bar pill string according to user settings."""
     badges: List[str] = []
-    compact = cfg.bar_metric_mode == "compact"
     for e in snapshot.engines:
         if not cfg.is_engine_enabled(e.engine_id):
             continue
         if not e.installed and e.engine_id != "qoder":
             continue
-        p = int(round(e.primary_quota.used_percent)) if e.primary_quota else 0
-        s = int(round(e.secondary_quota.used_percent)) if e.secondary_quota else 0
+        live_quotas = [
+            quota
+            for quota in (e.primary_quota, e.secondary_quota)
+            if quota is not None and not quota.is_estimated
+        ]
         if cfg.bar_metric_mode == "highest":
-            val = max(p, s)
+            selected = max(live_quotas, key=lambda quota: quota.used_percent, default=None)
         else:
-            val = p if p > 0 else s
-        if compact:
-            badges.append(f"{e.short_name}:{val}%")
-        else:
-            badges.append(f"{e.short_name} {val}%")
+            selected = (
+                e.primary_quota
+                if e.primary_quota is not None and not e.primary_quota.is_estimated
+                else None
+            )
+        value = f"{int(round(selected.used_percent))}%" if selected else "--"
+        badges.append(f"{e.icon} {value}")
     if not badges:
-        return "AgentBar"
-    sep = " · " if compact else "  ·  "
-    return sep.join(badges)
+        return "Kio"
+    return " · ".join(badges)
+
+
+def select_compact_engines(
+    engines: List[EngineUsage], selected_view: str
+) -> List[EngineUsage]:
+    if selected_view == "all":
+        return list(engines)
+    selected = [engine for engine in engines if engine.engine_id == selected_view]
+    return selected or list(engines)
+
+
+def should_close_engine_popover(
+    current_view: str, popover_visible: bool, requested_view: str
+) -> bool:
+    """Return whether activating the visible provider should close its popover."""
+    return popover_visible and current_view == requested_view
 
 
 def run_pystray_menubar(refresh_interval: int = 15) -> int:
@@ -240,6 +277,22 @@ window.agentbar-popover {
 .icon-btn:hover {
     color: #ededef;
     background-color: #242428;
+}
+.close-btn {
+    background-image: none;
+    background-color: transparent;
+    color: #a1a1aa;
+    border: none;
+    border-radius: 6px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    font-size: 18px;
+    font-weight: 500;
+}
+.close-btn:hover {
+    color: #ffffff;
+    background-color: #2a2a2e;
 }
 .icon-btn-active {
     background-image: none;
@@ -481,7 +534,7 @@ def _create_tray_pixbuf(snapshot: Optional[UsageSnapshot] = None, size: int = 22
 
 
 def _create_circular_ring_pixbuf(remaining_percent: float, size: int = 28) -> Any:
-    """Render a smooth green circular progress ring matching Antigravity's native UI (Hình 5)."""
+    """Render a smooth green circular progress ring matching Antigravity's native UI."""
     from gi.repository import GdkPixbuf
     from PIL import Image, ImageDraw
 
@@ -584,7 +637,8 @@ def run_gtk_menubar(
             self.config = load_config()
             if refresh_interval is not None:
                 self.config.refresh_interval_sec = max(5, refresh_interval)
-            self.snapshot = collect_usage_snapshot()
+            self.snapshot = UsageSnapshot(engines=[])
+            self.refresh_in_progress = False
             self.popover_visible = start_expanded or open_settings or bool(initial_tab)
             if initial_tab:
                 self.selected_view = initial_tab
@@ -598,7 +652,7 @@ def run_gtk_menubar(
 
             # 1. Bottom-Right Floating Bar Pill (can be shown/hidden at will)
             self.pill_win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-            self.pill_win.set_title("AgentBar")
+            self.pill_win.set_title("Kio Usage Monitoring")
             self.pill_win.set_decorated(False)
             self.pill_win.set_keep_above(True)
             self.pill_win.stick()
@@ -647,13 +701,14 @@ def run_gtk_menubar(
 
             # 2. Popover Window
             self.pop_win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
-            self.pop_win.set_title("AgentBar Usage")
+            self.pop_win.set_title("Kio Usage Monitoring")
             self.pop_win.set_decorated(False)
             self.pop_win.set_keep_above(True)
             self.pop_win.stick()
             self.pop_win.set_skip_taskbar_hint(True)
             self.pop_win.set_default_size(580, -1)
             self.pop_win.get_style_context().add_class("agentbar-popover")
+            self.pop_win.connect("key-press-event", self.on_popover_key_press)
 
             self.pop_root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self.pop_win.add(self.pop_root)
@@ -662,23 +717,11 @@ def run_gtk_menubar(
             self.icon_cache_dir = Path.home() / ".cache" / "agentbar" / "icons"
             self.icon_cache_dir.mkdir(parents=True, exist_ok=True)
             self._save_dynamic_sni_icon()
-
-            init_bar_str = _format_bar_from_config(self.snapshot, self.config)
+            self._save_provider_sni_icons()
+            self.sni_indicators: Dict[str, LinuxTopPanelIndicator] = {}
             self.sni_indicator: Optional[LinuxTopPanelIndicator] = None
             self.status_icon = None
-            try:
-                self.sni_indicator = LinuxTopPanelIndicator(
-                    icon_theme_dir=self.icon_cache_dir,
-                    icon_name="agentbar",
-                    initial_label=init_bar_str,
-                    on_activate_tab=self.open_specific_tab,
-                    on_toggle_popover=self.on_toggle_popover,
-                    on_toggle_floating_bar=self.toggle_floating_bar,
-                    on_refresh=lambda: self.refresh_ui(force_refresh=True),
-                    on_quit=lambda: Gtk.main_quit(),
-                )
-            except Exception:
-                self.sni_indicator = None
+            self._sync_sni_indicators()
 
             self.refresh_ui()
             if self.config.show_floating_bar or not (
@@ -694,15 +737,91 @@ def run_gtk_menubar(
                 self._position_windows()
 
             self._schedule_timer()
+            GLib.idle_add(self._prompt_autostart_if_needed)
+
+        def _prompt_autostart_if_needed(self) -> bool:
+            if self.config.autostart_prompted:
+                return False
+            dialog = Gtk.MessageDialog(
+                transient_for=self.pop_win,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text="Start Kio Usage Monitoring when you sign in?",
+            )
+            dialog.format_secondary_text(
+                "Choose Yes to keep usage visible on the menu bar after every login. "
+                "You can change this later in Settings."
+            )
+            response = dialog.run()
+            dialog.destroy()
+            self.config.autostart_on_login = response == Gtk.ResponseType.YES
+            self.config.autostart_prompted = True
+            save_config(self.config)
+            return False
 
         def _save_dynamic_sni_icon(self) -> None:
             try:
-                pil_img = create_tray_icon_image(self.snapshot, size=64)
-                pil_img.save(self.icon_cache_dir / "agentbar.png", format="PNG")
+                target = self.icon_cache_dir / "agentbar.png"
+                brand_icon = find_installed_brand_icon()
+                if brand_icon is not None:
+                    shutil.copy2(brand_icon, target)
+                else:
+                    pil_img = create_tray_icon_image(self.snapshot, size=64)
+                    pil_img.save(target, format="PNG")
             except Exception:
                 pass
 
+        def _save_provider_sni_icons(self) -> None:
+            source_dir = find_installed_provider_icon_dir()
+            if source_dir is None:
+                return
+            for source in source_dir.iterdir():
+                if source.suffix.lower() not in (".png", ".svg"):
+                    continue
+                target = self.icon_cache_dir / f"agentbar-{source.stem}{source.suffix.lower()}"
+                try:
+                    shutil.copy2(source, target)
+                except OSError:
+                    pass
+
+        def _sync_sni_indicators(self) -> None:
+            engine_ids = ["claude", "codex", "antigravity", "qoder"]
+            desired = {
+                engine_id
+                for engine_id in engine_ids
+                if self.config.is_engine_enabled(engine_id)
+            }
+            for engine_id in list(self.sni_indicators):
+                if engine_id not in desired:
+                    self.sni_indicators.pop(engine_id).close()
+            for index, engine_id in enumerate(engine_ids, start=1):
+                if engine_id not in desired or engine_id in self.sni_indicators:
+                    continue
+                try:
+                    self.sni_indicators[engine_id] = LinuxTopPanelIndicator(
+                        icon_theme_dir=self.icon_cache_dir,
+                        icon_name=f"agentbar-{engine_id}",
+                        initial_label="--",
+                        on_activate_tab=self.open_specific_tab,
+                        on_toggle_popover=self.on_toggle_popover,
+                        on_toggle_floating_bar=self.toggle_floating_bar,
+                        on_refresh=lambda: self.refresh_ui(force_refresh=True),
+                        on_quit=lambda: Gtk.main_quit(),
+                        indicator_id=f"agentbar-{engine_id}",
+                        instance_index=index,
+                        activate_tab_id=engine_id,
+                    )
+                except Exception:
+                    pass
+            self.sni_indicator = next(iter(self.sni_indicators.values()), None)
+
         def open_specific_tab(self, tab_id: str) -> None:
+            if should_close_engine_popover(
+                self.selected_view, self.popover_visible, tab_id
+            ):
+                self.close_popover()
+                return
             self.selected_view = tab_id
             self.popover_visible = True
             self.refresh_ui()
@@ -765,7 +884,7 @@ def run_gtk_menubar(
         def _show_context_menu(self, button: int, activate_time: int) -> None:
             menu = Gtk.Menu()
             item_toggle = Gtk.MenuItem(
-                label="Hide Dashboard" if self.popover_visible else "Show Dashboard"
+                label="Hide Usage" if self.popover_visible else "Show Usage"
             )
             item_toggle.connect("activate", self.on_toggle_popover)
             menu.append(item_toggle)
@@ -800,7 +919,17 @@ def run_gtk_menubar(
                 self.pop_win.show_all()
                 self._position_windows()
             else:
-                self.pop_win.hide()
+                self.close_popover()
+
+        def close_popover(self, *_args: Any) -> None:
+            self.popover_visible = False
+            self.pop_win.hide()
+
+        def on_popover_key_press(self, _widget: Any, event: Any) -> bool:
+            if Gdk.keyval_name(event.keyval) == "Escape":
+                self.close_popover()
+                return True
+            return False
 
         def on_select_tab(self, _btn: Any, view_id: str) -> None:
             if view_id == "settings" and self.selected_view == "settings":
@@ -824,7 +953,7 @@ def run_gtk_menubar(
                         from gi.repository import Notify
 
                         if not Notify.is_initted():
-                            Notify.init("AgentBar")
+                            Notify.init("Kio Usage Monitoring")
                         n = Notify.Notification.new(
                             f"{e.name} Quota Warning ({int(round(pct))}% used)",
                             f"Usage has reached {int(round(pct))}% (threshold: {int(thresh)}%).",
@@ -843,7 +972,40 @@ def run_gtk_menubar(
                 pass
 
         def refresh_ui(self, force_refresh: bool = False) -> bool:
-            self.snapshot = collect_usage_snapshot(force_refresh=force_refresh)
+            self._render_ui()
+            if not self.refresh_in_progress:
+                self.refresh_in_progress = True
+                worker = threading.Thread(
+                    target=self._refresh_snapshot_worker,
+                    args=(force_refresh,),
+                    daemon=True,
+                    name="agentbar-live-refresh",
+                )
+                worker.start()
+            return True
+
+        def _refresh_snapshot_worker(self, force_refresh: bool) -> None:
+            try:
+                snapshot = collect_usage_snapshot(
+                    force_refresh=force_refresh,
+                    live_only=True,
+                )
+            except Exception:
+                GLib.idle_add(self._finish_refresh_without_snapshot)
+                return
+            GLib.idle_add(self._apply_live_snapshot, snapshot)
+
+        def _finish_refresh_without_snapshot(self) -> bool:
+            self.refresh_in_progress = False
+            return False
+
+        def _apply_live_snapshot(self, snapshot: UsageSnapshot) -> bool:
+            self.snapshot = snapshot
+            self.refresh_in_progress = False
+            self._render_ui()
+            return False
+
+        def _render_ui(self) -> bool:
             self._check_notifications()
 
             arrow = "▴" if self.popover_visible else "▾"
@@ -851,27 +1013,34 @@ def run_gtk_menubar(
             self.pill_label.set_text(f"{bar_str}  {arrow}")
 
             self._save_dynamic_sni_icon()
-            if self.sni_indicator is not None:
-                engine_menu_lines: List[Dict[str, str]] = []
-                for eng in self.snapshot.engines:
-                    if not self.config.is_engine_enabled(eng.engine_id) or not eng.installed:
-                        continue
-                    p_pct = int(round(eng.primary_quota.used_percent)) if eng.primary_quota else 0
-                    s_pct = int(round(eng.secondary_quota.used_percent)) if eng.secondary_quota else 0
-                    engine_menu_lines.append(
-                        {
-                            "engine_id": eng.engine_id,
-                            "label": f"{eng.icon} {eng.name} — Session: {p_pct}% used · Week: {s_pct}% used",
-                        }
-                    )
-                self.sni_indicator.update_panel(bar_str, engine_menu_lines)
+            self._sync_sni_indicators()
+            engine_menu_lines: List[Dict[str, str]] = []
+            engine_values: Dict[str, str] = {}
+            for eng in self.snapshot.engines:
+                if not self.config.is_engine_enabled(eng.engine_id) or not eng.installed:
+                    continue
+                p_pct = (
+                    f"{int(round(eng.primary_quota.used_percent))}%"
+                    if eng.primary_quota is not None and not eng.primary_quota.is_estimated
+                    else "--"
+                )
+                s_pct = (
+                    f"{int(round(eng.secondary_quota.used_percent))}%"
+                    if eng.secondary_quota is not None and not eng.secondary_quota.is_estimated
+                    else "--"
+                )
+                engine_values[eng.engine_id] = p_pct
+                engine_menu_lines.append(
+                    {
+                        "engine_id": eng.engine_id,
+                        "label": f"{eng.name} — Session: {p_pct} · Week: {s_pct}",
+                    }
+                )
+            for engine_id, indicator in self.sni_indicators.items():
+                indicator.update_panel(engine_values.get(engine_id, "--"), engine_menu_lines)
 
             for child in self.pop_root.get_children():
                 self.pop_root.remove(child)
-
-            # Top Navigation Bar: [All] [Claude] [Codex] [Agy] ... [⚙] [↻] [−] [✕]
-            nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-            nav.get_style_context().add_class("top-nav")
 
             enabled_engines = [
                 e
@@ -880,80 +1049,54 @@ def run_gtk_menubar(
                 and (e.installed or e.engine_id == "qoder")
             ]
 
-            tabs = [("all", "All")] + [
-                (e.engine_id, e.short_name) for e in enabled_engines
-            ]
-            for tab_id, tab_title in tabs:
-                tbtn = Gtk.Button(label=tab_title)
-                cls = (
-                    "tab-btn-active"
-                    if self.selected_view == tab_id
-                    else "tab-btn"
-                )
-                tbtn.get_style_context().add_class(cls)
-                tbtn.connect("clicked", self.on_select_tab, tab_id)
-                nav.pack_start(tbtn, False, False, 0)
-
-            btn_quit = Gtk.Button(label="✕")
-            btn_quit.set_tooltip_text("Quit background app")
-            btn_quit.get_style_context().add_class("icon-btn")
-            btn_quit.connect("clicked", lambda *_: Gtk.main_quit())
-
-            btn_hide = Gtk.Button(label="−")
-            btn_hide.set_tooltip_text("Minimize to Menu Bar")
-            btn_hide.get_style_context().add_class("icon-btn")
-            btn_hide.connect("clicked", self.on_toggle_popover)
-
-            btn_refresh = Gtk.Button(label="↻")
-            btn_refresh.set_tooltip_text("Force live refresh from servers now")
-            btn_refresh.get_style_context().add_class("icon-btn")
-            btn_refresh.connect("clicked", lambda *_: self.refresh_ui(force_refresh=True))
-
-            btn_settings = Gtk.Button(label="⚙")
-            btn_settings.set_tooltip_text("Settings")
-            s_cls = (
-                "icon-btn-active"
-                if self.selected_view == "settings"
-                else "icon-btn"
-            )
-            btn_settings.get_style_context().add_class(s_cls)
-            btn_settings.connect("clicked", self.on_select_tab, "settings")
-
-            nav.pack_end(btn_quit, False, False, 0)
-            nav.pack_end(btn_hide, False, False, 0)
-            nav.pack_end(btn_refresh, False, False, 0)
-            nav.pack_end(btn_settings, False, False, 0)
-            self.pop_root.pack_start(nav, False, False, 0)
-
             if self.selected_view == "settings":
+                settings_header = Gtk.Box(
+                    orientation=Gtk.Orientation.HORIZONTAL, spacing=4
+                )
+                settings_header.get_style_context().add_class("top-nav")
+                settings_title = Gtk.Label(label="Settings", xalign=0)
+                settings_title.get_style_context().add_class("section-heading")
+                settings_close = Gtk.Button(label="×")
+                settings_close.set_tooltip_text("Close settings")
+                settings_close.get_style_context().add_class("close-btn")
+                settings_close.connect("clicked", self.close_popover)
+                settings_header.pack_start(settings_title, True, True, 0)
+                settings_header.pack_end(settings_close, False, False, 0)
+                self.pop_root.pack_start(settings_header, False, False, 0)
                 self.pop_root.pack_start(self._build_settings_panel(), False, False, 0)
-            elif self.selected_view == "claude":
-                eng = next((e for e in self.snapshot.engines if e.engine_id == "claude"), None)
-                if eng:
-                    self.pop_root.pack_start(self._build_claude_full_tab(eng), False, False, 0)
-            elif self.selected_view == "codex":
-                eng = next((e for e in self.snapshot.engines if e.engine_id == "codex"), None)
-                if eng:
-                    self.pop_root.pack_start(self._build_codex_full_tab(eng), False, False, 0)
-            elif self.selected_view == "antigravity":
-                eng = next((e for e in self.snapshot.engines if e.engine_id == "antigravity"), None)
-                if eng:
-                    self.pop_root.pack_start(self._build_antigravity_full_tab(eng), False, False, 0)
             else:
-                # Tab "All" (or other engine): concise summary view
-                engines_to_show = [
-                    e
-                    for e in enabled_engines
-                    if self.selected_view in ("all", e.engine_id)
-                ]
+                engines_to_show = select_compact_engines(
+                    enabled_engines, self.selected_view
+                )
+                usage_header = Gtk.Box(
+                    orientation=Gtk.Orientation.HORIZONTAL, spacing=4
+                )
+                usage_header.get_style_context().add_class("top-nav")
+                usage_title_text = (
+                    engines_to_show[0].name
+                    if self.selected_view != "all" and engines_to_show
+                    else "Usage"
+                )
+                usage_title = Gtk.Label(label=usage_title_text, xalign=0)
+                usage_title.get_style_context().add_class("section-heading")
+                usage_close = Gtk.Button(label="×")
+                usage_close.set_tooltip_text("Close usage")
+                usage_close.get_style_context().add_class("close-btn")
+                usage_close.connect("clicked", self.close_popover)
+                usage_header.pack_start(usage_title, True, True, 0)
+                usage_header.pack_end(usage_close, False, False, 0)
+                self.pop_root.pack_start(usage_header, False, False, 0)
                 for idx, e in enumerate(engines_to_show):
                     if idx > 0:
                         div = Gtk.Box()
                         div.get_style_context().add_class("engine-divider")
                         self.pop_root.pack_start(div, False, False, 0)
-                    section = self._build_minimal_engine_section(
-                        e, show_header=(len(engines_to_show) > 1)
-                    )
+                    if e.engine_id == "antigravity" and e.extra.get("agy_groups"):
+                        section = self._build_antigravity_full_tab(e)
+                    else:
+                        section = self._build_minimal_engine_section(
+                            e, show_header=(len(engines_to_show) > 1)
+                        )
                     self.pop_root.pack_start(section, False, False, 0)
 
             if self.popover_visible:
@@ -962,7 +1105,7 @@ def run_gtk_menubar(
             return True
 
         def _build_claude_full_tab(self, e: EngineUsage) -> Any:
-            """Full Claude Code view matching Hình 2 & Hình 3 with 100% live data & real actions."""
+            """Build the Claude Code view with live data and real actions."""
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             usage_url = str(
                 e.extra.get("usage_settings_url", "https://claude.ai/settings/usage")
@@ -982,7 +1125,7 @@ def run_gtk_menubar(
             sec1.pack_start(self._build_quota_row(q1), False, False, 0)
             sec1.pack_start(self._build_quota_row(q2), False, False, 0)
 
-            # Limit resets block (Hình 2)
+            # Limit reset details
             lbl_lr = Gtk.Label(label="Limit resets", xalign=0)
             lbl_lr.set_margin_top(6)
             lbl_lr.get_style_context().add_class("section-heading")
@@ -1020,7 +1163,7 @@ def run_gtk_menubar(
             div1.get_style_context().add_class("engine-divider")
             root.pack_start(div1, False, False, 0)
 
-            # 2. Usage credits & Monthly spend limit (Hình 3)
+            # Usage credits and monthly spend limit
             sec2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
             sec2.get_style_context().add_class("engine-section")
 
@@ -1068,7 +1211,7 @@ def run_gtk_menubar(
             uc_desc_row.pack_end(uc_pill, False, False, 0)
             sec2.pack_start(uc_desc_row, False, False, 0)
 
-            # "Buy usage credits · Up to 30% off" button (Hình 3)
+            # Usage credits action
             buy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
             buy_btn = Gtk.Button(label="Buy usage credits · Up to 30% off")
             buy_btn.set_tooltip_text("Purchase Claude usage credits on claude.ai/settings/usage")
@@ -1119,7 +1262,7 @@ def run_gtk_menubar(
             div2.get_style_context().add_class("engine-divider")
             root.pack_start(div2, False, False, 0)
 
-            # 3. This week's usage by product (Hình 3 - 100% live from seven_day_breakdown.rows)
+            # Weekly product usage from seven_day_breakdown.rows
             sec3 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             sec3.get_style_context().add_class("engine-section")
             p_hdr = Gtk.Label(label="This week's usage by product", xalign=0)
@@ -1149,7 +1292,7 @@ def run_gtk_menubar(
             return root
 
         def _build_codex_full_tab(self, e: EngineUsage) -> Any:
-            """Full OpenAI Codex view matching Hình 4 with 100% live data & real actions."""
+            """Build the OpenAI Codex view with live data and real actions."""
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             root.get_style_context().add_class("engine-section")
 
@@ -1228,7 +1371,7 @@ def run_gtk_menubar(
 
             root.pack_start(card1, False, False, 0)
 
-            # 2. Recent plan usage section (Hình 4)
+            # Recent plan usage
             rec_hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             rec_left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             rt = Gtk.Label(label="Recent plan usage", xalign=0)
@@ -1284,7 +1427,7 @@ def run_gtk_menubar(
             return root
 
         def _build_antigravity_full_tab(self, e: EngineUsage) -> Any:
-            """Full Antigravity view matching Hình 5 (100% live from RetrieveUserQuotaSummary RPC)."""
+            """Build the Antigravity view from RetrieveUserQuotaSummary RPC data."""
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
             root.get_style_context().add_class("engine-section")
 
@@ -1411,7 +1554,7 @@ def run_gtk_menubar(
             sec_bg.pack_start(
                 self._build_toggle_row(
                     "Run in background on startup",
-                    "Automatically start AgentBar when you log in",
+                    "Automatically start Kio Usage Monitoring when you log in",
                     self.config.autostart_on_login,
                     _toggle_autostart,
                 ),
@@ -1607,13 +1750,40 @@ def run_gtk_menubar(
                 hdr.get_style_context().add_class("engine-header")
                 box.pack_start(hdr, False, False, 0)
 
-            q1 = e.primary_quota or RateLimitWindow("5h", 0.0, 300)
-            q2 = e.secondary_quota or RateLimitWindow("7d", 0.0, 10080)
-            for q in [q1, q2]:
-                row = self._build_quota_row(q)
+            quotas = [
+                (e.primary_quota, "Current session"),
+                (e.secondary_quota, "This week"),
+            ]
+            unavailable_message = (
+                "Open Antigravity to load live usage"
+                if e.engine_id == "antigravity"
+                else "Live usage unavailable"
+            )
+            for quota, title in quotas:
+                if quota is None or quota.is_estimated:
+                    row = self._build_unavailable_quota_row(title, unavailable_message)
+                else:
+                    row = self._build_quota_row(quota)
                 box.pack_start(row, False, False, 0)
 
             return box
+
+        def _build_unavailable_quota_row(
+            self, title: str, message: str = "Live usage unavailable"
+        ) -> Any:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+            left_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            title_lbl = Gtk.Label(label=title, xalign=0)
+            title_lbl.get_style_context().add_class("row-title")
+            sub_lbl = Gtk.Label(label=message, xalign=0)
+            sub_lbl.get_style_context().add_class("row-subtitle")
+            left_col.pack_start(title_lbl, False, False, 0)
+            left_col.pack_start(sub_lbl, False, False, 0)
+            value_lbl = Gtk.Label(label="--", xalign=1)
+            value_lbl.get_style_context().add_class("pct-normal")
+            row.pack_start(left_col, True, True, 0)
+            row.pack_end(value_lbl, False, False, 0)
+            return row
 
         def _build_quota_row(self, q: RateLimitWindow) -> Any:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)

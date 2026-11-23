@@ -54,7 +54,7 @@ def run_win_mac_bottom_bar(
             self.codex_recent_tab: str = "5h"
 
             self.root = tk.Tk()
-            self.root.title("AgentBar")
+            self.root.title("Kio Usage Monitoring")
             self.root.overrideredirect(True)
             self.root.attributes("-topmost", True)
             self.root.configure(bg="#18181a")
@@ -111,7 +111,7 @@ def run_win_mac_bottom_bar(
 
             # 2. Expandable Popover Toplevel right above the Bottom-Right Bar
             self.pop_win = tk.Toplevel(self.root)
-            self.pop_win.title("AgentBar Dashboard")
+            self.pop_win.title("Kio Usage Monitoring")
             self.pop_win.overrideredirect(True)
             self.pop_win.attributes("-topmost", True)
             self.pop_win.configure(
@@ -440,7 +440,7 @@ def run_win_mac_bottom_bar(
                         ),
                     ),
                     pystray.MenuItem(
-                        "✕ Quit AgentBar",
+                        "✕ Quit Kio Usage Monitoring",
                         lambda icon, item: (
                             icon.stop(),
                             self.root.after(0, self.root.quit),
@@ -450,7 +450,7 @@ def run_win_mac_bottom_bar(
                 tray_icon = pystray.Icon(
                     "agentbar",
                     create_tray_icon_image(self.snapshot),
-                    title="AgentBar — Click to Show/Hide Bottom-Right Bar",
+                    title="Kio Usage Monitoring — Click to Show/Hide",
                     menu=menu,
                 )
                 tray_icon.run()

@@ -6,11 +6,17 @@ import io
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from agentbar.cli import main as cli_main
+from agentbar.antigravity_quota import (
+    find_antigravity_rpc_processes,
+    parse_antigravity_quota_summary,
+)
 from agentbar.detectors import (
     collect_usage_snapshot,
     detect_antigravity,
@@ -18,8 +24,19 @@ from agentbar.detectors import (
     detect_codex,
     detect_qoder,
 )
-from agentbar.menubar import create_tray_icon_image
+from agentbar.config import AgentBarConfig
+from agentbar.packaging import DEBIAN_RUNTIME_DEPENDENCIES, validate_release_version
+from agentbar.menubar import (
+    _format_bar_from_config,
+    create_tray_icon_image,
+    find_installed_brand_icon,
+    find_installed_provider_icon_dir,
+    select_compact_engines,
+    should_close_engine_popover,
+)
 from agentbar.models import (
+    EngineUsage,
+    RateLimitWindow,
     ascii_progress_bar,
     format_cost,
     format_relative_time,
@@ -59,6 +76,108 @@ class TestAgentBar(unittest.TestCase):
             "5m ago",
         )
         self.assertEqual(len(ascii_progress_bar(50.0, width=10)), 10)
+
+    def test_compact_usage_engine_selection(self) -> None:
+        claude = EngineUsage("claude", "Claude Code", "Claude", "", installed=True)
+        codex = EngineUsage("codex", "OpenAI Codex", "Codex", "", installed=True)
+        engines = [claude, codex]
+
+        self.assertEqual(select_compact_engines(engines, "all"), engines)
+        self.assertEqual(select_compact_engines(engines, "claude"), [claude])
+        self.assertEqual(select_compact_engines(engines, "unknown"), engines)
+        self.assertEqual(select_compact_engines([], "claude"), [])
+
+    def test_provider_icon_activation_toggles_visible_popover(self) -> None:
+        self.assertTrue(should_close_engine_popover("codex", True, "codex"))
+        self.assertFalse(should_close_engine_popover("codex", False, "codex"))
+        self.assertFalse(should_close_engine_popover("claude", True, "codex"))
+
+    def test_compact_bar_uses_live_session_zero_without_weekly_fallback(self) -> None:
+        cfg = AgentBarConfig(bar_metric_mode="session")
+        claude = EngineUsage("claude", "Claude Code", "Claude", "C", installed=True)
+        claude.primary_quota = RateLimitWindow("5h", 0.0, 300, is_estimated=False)
+        claude.secondary_quota = RateLimitWindow("7d", 41.0, 10080, is_estimated=False)
+
+        estimated = EngineUsage("antigravity", "Antigravity", "Agy", "A", installed=True)
+        estimated.primary_quota = RateLimitWindow("5h", 6.0, 300, is_estimated=True)
+
+        text = _format_bar_from_config(
+            type("Snapshot", (), {"engines": [claude, estimated]})(), cfg
+        )
+        self.assertEqual(text, "C 0% · A --")
+
+    def test_live_only_snapshot_is_parallel_and_preserves_engine_order(self) -> None:
+        def fake(engine_id: str) -> EngineUsage:
+            time.sleep(0.08)
+            return EngineUsage(engine_id, engine_id, engine_id, engine_id[0], installed=True)
+
+        with (
+            patch("agentbar.detectors.detect_claude_code", side_effect=lambda **_: fake("claude")),
+            patch("agentbar.detectors.detect_codex", side_effect=lambda **_: fake("codex")),
+            patch("agentbar.detectors.detect_antigravity", side_effect=lambda **_: fake("antigravity")),
+            patch("agentbar.detectors.detect_qoder", side_effect=lambda **_: fake("qoder")),
+        ):
+            started = time.perf_counter()
+            snapshot = collect_usage_snapshot(live_only=True)
+            elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.24)
+        self.assertEqual(
+            [engine.engine_id for engine in snapshot.engines],
+            ["claude", "codex", "antigravity", "qoder"],
+        )
+
+    def test_live_only_fixture_does_not_invent_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".claude").mkdir()
+            usage = detect_claude_code(
+                home_dir=home,
+                now_epoch=self.fixed_now,
+                live_only=True,
+            )
+
+        self.assertTrue(usage.installed)
+        self.assertEqual(usage.status, "unavailable")
+        self.assertIsNone(usage.primary_quota)
+        self.assertIsNone(usage.secondary_quota)
+
+    def test_installed_brand_icon_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            icon = home / ".local/share/icons/hicolor/256x256/apps/kio-usage-monitoring.png"
+            icon.parent.mkdir(parents=True)
+            icon.write_bytes(b"png")
+            self.assertEqual(find_installed_brand_icon(home), icon)
+            icon.unlink()
+            self.assertIsNone(find_installed_brand_icon(home))
+
+    def test_installed_provider_icon_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            icon_dir = home / ".local/share/agentbar/providers"
+            icon_dir.mkdir(parents=True)
+            self.assertEqual(find_installed_provider_icon_dir(home), icon_dir)
+
+    def test_codex_icon_renders_white_on_transparent_background(self) -> None:
+        import gi
+
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf
+
+        icon_path = Path(__file__).resolve().parent.parent / "assets/providers/codex.svg"
+        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+            str(icon_path), 64, 64, True
+        )
+        pixels = pixbuf.get_pixels()
+        channels = pixbuf.get_n_channels()
+        visible_white_pixels = 0
+        for offset in range(0, len(pixels), channels):
+            red, green, blue = pixels[offset : offset + 3]
+            alpha = pixels[offset + 3] if channels == 4 else 255
+            if alpha > 0 and red > 200 and green > 200 and blue > 200:
+                visible_white_pixels += 1
+        self.assertGreater(visible_white_pixels, 100)
 
     def test_detect_claude_code_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -240,6 +359,100 @@ class TestAgentBar(unittest.TestCase):
             self.assertEqual(qoder_u.extra["agents_count"], 1)
             self.assertEqual(qoder_u.extra["skills_count"], 2)
 
+    def test_antigravity_quota_summary_preserves_all_limits(self) -> None:
+        payload = {
+            "response": {
+                "quotaSummary": {
+                    "groups": [
+                        {
+                            "displayName": "Gemini Models",
+                            "buckets": [
+                                {
+                                    "displayName": "Weekly Limit Remaining",
+                                    "remainingFraction": 0.93,
+                                    "resetTime": self.fixed_now + 6 * 86400,
+                                    "window": "7d",
+                                },
+                                {
+                                    "displayName": "Five Hour Limit Remaining",
+                                    "remainingFraction": 0.96,
+                                    "resetTime": self.fixed_now + 2 * 3600,
+                                    "window": "5h",
+                                },
+                            ],
+                        },
+                        {
+                            "displayName": "Claude and GPT models",
+                            "quotaBuckets": [
+                                {"title": "Weekly Limit Remaining", "remainingPercent": 100},
+                                {"title": "Five Hour Limit Remaining", "remainingPercent": 100},
+                            ],
+                        },
+                        {
+                            "displayName": "Gemini 4 Argon",
+                            "buckets": [
+                                {
+                                    "displayName": "Gemini 4 Argon Weekly Limit",
+                                    "remainingFraction": 0.04,
+                                    "resetTime": self.fixed_now + 5 * 86400,
+                                }
+                            ],
+                        },
+                    ]
+                }
+            }
+        }
+
+        parsed = parse_antigravity_quota_summary(payload, self.fixed_now)
+        self.assertIsNotNone(parsed)
+        primary, secondary, groups = parsed
+        self.assertEqual(len(groups), 3)
+        self.assertEqual([len(group["items"]) for group in groups], [2, 2, 1])
+        self.assertEqual(groups[0]["items"][0]["remaining_percent"], 93)
+        self.assertEqual(groups[2]["items"][0]["remaining_percent"], 4)
+        self.assertAlmostEqual(primary.used_percent, 4.0)
+        self.assertAlmostEqual(secondary.used_percent, 96.0)
+
+    def test_antigravity_quota_summary_rejects_invalid_payload(self) -> None:
+        self.assertIsNone(parse_antigravity_quota_summary({}, self.fixed_now))
+        invalid = {"groups": [{"displayName": "Gemini", "buckets": [{}]}]}
+        self.assertIsNone(parse_antigravity_quota_summary(invalid, self.fixed_now))
+
+        top_level = {
+            "response": {
+                "buckets": [
+                    {
+                        "displayName": "Weekly Limit Remaining",
+                        "remainingFraction": 0.5,
+                        "window": "7d",
+                    }
+                ]
+            }
+        }
+        parsed = parse_antigravity_quota_summary(top_level, self.fixed_now)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[2][0]["items"][0]["remaining_percent"], 50)
+
+    def test_antigravity_process_selection_ignores_vscode_codeium(self) -> None:
+        output = "\n".join(
+            [
+                "toan 100 0 0 codeium/language_server --ide_name vscode --csrf_token wrong",
+                "toan 200 0 0 /opt/antigravity/language_server --database_dir /home/toan/.gemini/antigravity --csrf_token right",
+            ]
+        )
+        self.assertEqual(find_antigravity_rpc_processes(output), [("200", "right")])
+
+    def test_release_version_and_linux_dependencies(self) -> None:
+        self.assertEqual(validate_release_version("v1.0.0"), "1.0.0")
+        self.assertIn("python3-gi", DEBIAN_RUNTIME_DEPENDENCIES)
+        self.assertIn("gir1.2-ayatanaappindicator3-0.1", DEBIAN_RUNTIME_DEPENDENCIES)
+
+    def test_release_version_rejects_prerelease_and_empty_values(self) -> None:
+        for invalid in ("", "1.0", "1.0.0-beta", "latest"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    validate_release_version(invalid)
+
     def test_snapshot_outputs_and_cli(self) -> None:
         snap = collect_usage_snapshot()
         self.assertGreaterEqual(len(snap.installed_engines), 1)
@@ -299,7 +512,8 @@ class TestAgentBar(unittest.TestCase):
 
         desktop_entry = create_linux_desktop_entry(binary, icons["png"])
         self.assertIn("[Desktop Entry]", desktop_entry)
-        self.assertIn("AgentBar AI Monitor", desktop_entry)
+        self.assertIn("Name=Kio Usage Monitoring", desktop_entry)
+        self.assertIn("Icon=kio-usage-monitoring", desktop_entry)
         self.assertIn("OpenSettings", desktop_entry)
 
     def test_config_load_and_save(self) -> None:
@@ -309,7 +523,11 @@ class TestAgentBar(unittest.TestCase):
             cfg_file = Path(tmp) / "settings.json"
             cfg = AgentBarConfig()
             self.assertTrue(cfg.is_engine_enabled("claude"))
+            self.assertFalse(cfg.autostart_on_login)
+            self.assertFalse(cfg.autostart_prompted)
             cfg.set_engine_enabled("claude", False)
+            cfg.autostart_on_login = True
+            cfg.autostart_prompted = True
             cfg.refresh_interval_sec = 60
             cfg.warning_threshold_percent = 90
             cfg.bar_position = "center"
@@ -317,6 +535,8 @@ class TestAgentBar(unittest.TestCase):
 
             loaded = load_config(config_path=cfg_file)
             self.assertFalse(loaded.is_engine_enabled("claude"))
+            self.assertTrue(loaded.autostart_on_login)
+            self.assertTrue(loaded.autostart_prompted)
             self.assertEqual(loaded.refresh_interval_sec, 60)
             self.assertEqual(loaded.warning_threshold_percent, 90)
             self.assertEqual(loaded.bar_position, "center")

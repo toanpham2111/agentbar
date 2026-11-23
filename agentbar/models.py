@@ -244,7 +244,7 @@ class UsageSnapshot:
             if e.menu_bar_badge(compact=compact)
         ]
         if not badges:
-            return "AgentBar"
+            return "Kio"
         return separator.join(badges)
 
     def to_tmux_string(self) -> str:
@@ -260,7 +260,7 @@ class UsageSnapshot:
                 color = "#[fg=cyan]"
             badge = e.menu_bar_badge(compact=True)
             parts.append(f"{color}{badge}#[default]")
-        return " · ".join(parts) if parts else "AgentBar"
+        return " · ".join(parts) if parts else "Kio"
 
     def to_waybar_dict(self) -> Dict[str, Any]:
         """JSON payload compatible with Linux Waybar / Polybar custom modules."""

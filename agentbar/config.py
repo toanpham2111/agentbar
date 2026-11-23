@@ -38,7 +38,8 @@ class AgentBarConfig:
             "qoder": False,
         }
     )
-    autostart_on_login: bool = True
+    autostart_on_login: bool = False
+    autostart_prompted: bool = False
     start_collapsed: bool = True
     desktop_notifications: bool = True
     refresh_interval_sec: int = 30
@@ -69,6 +70,8 @@ def load_config(config_path: Optional[Path] = None) -> AgentBarConfig:
                 cfg.enabled_engines[str(k)] = bool(v)
         if "autostart_on_login" in raw:
             cfg.autostart_on_login = bool(raw["autostart_on_login"])
+        if "autostart_prompted" in raw:
+            cfg.autostart_prompted = bool(raw["autostart_prompted"])
         if "start_collapsed" in raw:
             cfg.start_collapsed = bool(raw["start_collapsed"])
         if "desktop_notifications" in raw:
@@ -109,16 +112,21 @@ def sync_os_autostart(enabled: bool) -> None:
         auto_file = get_autostart_desktop_path()
         if enabled:
             auto_file.parent.mkdir(parents=True, exist_ok=True)
-            bin_path = home / ".local" / "bin" / "agentbar"
-            icon_path = Path("/home/toan/Toan/agentbar/assets/agentbar.png")
+            current_entry = Path(sys.argv[0]).resolve()
+            candidates = (
+                current_entry,
+                home / ".local" / "bin" / "agentbar",
+                Path("/usr/bin/kio-usage-monitoring"),
+            )
+            bin_path = next((path for path in candidates if path.is_file()), candidates[1])
             content = (
                 "[Desktop Entry]\n"
                 "Version=1.0\n"
                 "Type=Application\n"
-                "Name=AgentBar AI Monitor\n"
-                "Comment=Background AI Coding Engine Usage Bar\n"
+                "Name=Kio Usage Monitoring\n"
+                "Comment=Background AI usage monitoring\n"
                 f"Exec={bin_path} bar --collapsed\n"
-                f"Icon={icon_path}\n"
+                "Icon=kio-usage-monitoring\n"
                 "Terminal=false\n"
                 "X-GNOME-Autostart-enabled=true\n"
             )
@@ -211,13 +219,14 @@ def start_background_daemon(open_settings: bool = False) -> Tuple[bool, int]:
         return (False, existing_pid)
 
     entry_script = Path(sys.argv[0]).resolve()
-    if not entry_script.is_file() or entry_script.name not in ("agentbar", "agentbar.py"):
-        candidate = Path.home() / ".local" / "bin" / "agentbar"
-        entry_script = (
-            candidate
-            if candidate.is_file()
-            else Path("/home/toan/Toan/agentbar/agentbar.py")
+    valid_entry_names = ("agentbar", "agentbar.py", "kio-usage-monitoring")
+    if not entry_script.is_file() or entry_script.name not in valid_entry_names:
+        candidates = (
+            Path.home() / ".local" / "bin" / "agentbar",
+            Path("/usr/bin/kio-usage-monitoring"),
+            Path("/home/toan/Toan/agentbar/agentbar.py"),
         )
+        entry_script = next((path for path in candidates if path.is_file()), candidates[-1])
     cmd = [sys.executable, str(entry_script), "bar"]
     cfg = load_config()
     if cfg.start_collapsed and not open_settings:

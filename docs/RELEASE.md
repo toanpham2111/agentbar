@@ -1,13 +1,20 @@
 # Release
 
-GitHub Actions builds Linux DEB/AppImage, Windows NSIS/MSI, and macOS DMG artifacts on native runners. Release publication requires all quality, native-test, and bundle jobs to pass.
+Stable releases publish the GTK menu-bar application as a Debian package.
 
-Before public distribution:
+## Build and verify
 
-1. Replace the provisional KIO icon with approved brand assets.
-2. Configure Apple signing/notarization secrets.
-3. Configure Windows code-signing secrets.
-4. Verify the installed app, system tray, notification permissions, autostart, SQLite persistence, and clean uninstall on every target.
-5. Publish SHA-256 checksums and provider limitations.
+```bash
+python3 -m compileall -q agentbar tests scripts
+python3 -m unittest discover -s tests -q
+python3 scripts/build_linux_release.py 1.0.0
+dpkg-deb --info release/Kio-Usage-Monitoring_1.0.0_amd64.deb
+dpkg-deb --contents release/Kio-Usage-Monitoring_1.0.0_amd64.deb
+(cd release && sha256sum -c SHA256SUMS)
+```
 
-CI configuration is not equivalent to completed OS verification. Record the successful workflow URL and artifact hashes in each release note.
+Pushing a stable `v*` tag runs the release workflow, repeats verification, and
+publishes the `.deb` installer plus `SHA256SUMS` to GitHub Releases.
+
+Windows and macOS installers are not published until they have native build,
+signing, installation, startup, tray, and uninstall verification.

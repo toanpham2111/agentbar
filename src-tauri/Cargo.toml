@@ -1,6 +1,6 @@
 [package]
 name = "kio-usage-monitor"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local-first AI developer tool usage monitor"
 authors = ["KIO Digital"]
 edition = "2024"

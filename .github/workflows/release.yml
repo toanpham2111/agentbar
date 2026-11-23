@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3-pil dpkg-dev
+      - name: Compile and test
+        run: |
+          python3 -m compileall -q agentbar tests scripts
+          python3 -m unittest discover -s tests -q
+      - name: Build Linux installer
+        run: python3 scripts/build_linux_release.py "$VERSION"
+      - name: Verify release assets
+        working-directory: release
+        run: |
+          sha256sum -c SHA256SUMS
+          dpkg-deb --info "Kio-Usage-Monitoring_${VERSION}_amd64.deb"
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Kio Usage Monitoring ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/Kio-Usage-Monitoring_${{ env.VERSION }}_amd64.deb
+            release/SHA256SUMS

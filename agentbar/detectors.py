@@ -21,12 +21,18 @@ import shutil
 import sqlite3
 import ssl
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .antigravity_quota import (
+    find_antigravity_rpc_processes,
+    parse_antigravity_quota_summary,
+)
 from .models import (
     EngineUsage,
     RateLimitWindow,
@@ -40,6 +46,7 @@ CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_LIVE_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 LIVE_CACHE_TTL_SECONDS = 25
+_LIVE_CACHE_LOCK = threading.Lock()
 
 
 def _parse_iso_timestamp(ts_val: Any) -> Optional[float]:
@@ -80,7 +87,8 @@ def _read_live_cache(key: str, now: float) -> Optional[Dict[str, Any]]:
     if not cache_file.is_file():
         return None
     try:
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        with _LIVE_CACHE_LOCK:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
         entry = data.get(key)
         if isinstance(entry, dict) and (now - float(entry.get("ts", 0))) <= LIVE_CACHE_TTL_SECONDS:
             return entry.get("payload")
@@ -93,15 +101,16 @@ def _write_live_cache(key: str, payload: Dict[str, Any], now: float) -> None:
     cache_dir = Path.home() / ".cache" / "agentbar"
     cache_file = cache_dir / "live_usage_cache.json"
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        data: Dict[str, Any] = {}
-        if cache_file.is_file():
-            try:
-                data = json.loads(cache_file.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-        data[key] = {"ts": now, "payload": payload}
-        cache_file.write_text(json.dumps(data), encoding="utf-8")
+        with _LIVE_CACHE_LOCK:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            data: Dict[str, Any] = {}
+            if cache_file.is_file():
+                try:
+                    data = json.loads(cache_file.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            data[key] = {"ts": now, "payload": payload}
+            cache_file.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
 
@@ -364,6 +373,7 @@ def detect_claude_code(
     quota_5h_tokens: int = 500_000,
     quota_7d_tokens: int = 50_000_000,
     force_refresh: bool = False,
+    live_only: bool = False,
 ) -> EngineUsage:
     """Detect Claude Code installation and fetch live OAuth quota + local JSONL token history."""
     home = home_dir or Path.home()
@@ -383,6 +393,21 @@ def detect_claude_code(
         status="installed" if installed else "not_found",
     )
     if not installed or not claude_dir.is_dir():
+        return usage
+
+    if live_only:
+        live_oauth = _fetch_claude_live_oauth_usage(
+            claude_dir, now, force_refresh=force_refresh
+        )
+        if live_oauth is None:
+            usage.status = "unavailable"
+            usage.metric_label = "Live usage unavailable"
+            return usage
+        usage.primary_quota, usage.secondary_quota, plan_tier, details = live_oauth
+        usage.model_or_plan = plan_tier
+        usage.extra.update(details)
+        usage.status = "active"
+        usage.metric_label = "Live quota"
         return usage
 
     cutoff_5h = now - (5 * 3600)
@@ -620,6 +645,7 @@ def detect_codex(
     home_dir: Optional[Path] = None,
     now_epoch: Optional[float] = None,
     force_refresh: bool = False,
+    live_only: bool = False,
 ) -> EngineUsage:
     """Detect OpenAI Codex CLI installation and fetch real live rate_limits + SQLite stats."""
     home = home_dir or Path.home()
@@ -639,6 +665,21 @@ def detect_codex(
         status="installed" if installed else "not_found",
     )
     if not installed or not codex_dir.is_dir():
+        return usage
+
+    if live_only:
+        live_codex = _fetch_codex_live_oauth_usage(
+            codex_dir, now, force_refresh=force_refresh
+        )
+        if live_codex is None:
+            usage.status = "unavailable"
+            usage.metric_label = "Live usage unavailable"
+            return usage
+        usage.primary_quota, usage.secondary_quota, plan_type, details = live_codex
+        usage.model_or_plan = plan_type or "codex"
+        usage.extra.update(details)
+        usage.status = "active"
+        usage.metric_label = "Live quota"
         return usage
 
     cutoff_5h = now - (5 * 3600)
@@ -847,163 +888,94 @@ def _fetch_antigravity_live_rpc_usage(
     except Exception:
         return None
 
-    csrf_token: Optional[str] = None
-    pid: Optional[str] = None
-    for line in ps_out.splitlines():
-        if "language_server" in line and "--csrf_token" in line:
-            m_tok = re.search(r"--csrf_token\s+([a-zA-Z0-9_-]+)", line)
-            parts = line.split()
-            if m_tok and len(parts) > 1:
-                csrf_token = m_tok.group(1)
-                pid = parts[1]
-                break
-
-    if not csrf_token or not pid:
+    rpc_processes = find_antigravity_rpc_processes(ps_out)
+    if not rpc_processes:
         return None
 
-    ports: List[int] = []
+    process_ports: List[Tuple[str, List[int]]] = []
     try:
         ss_out = subprocess.check_output(
             ["ss", "-tlpn"], stderr=subprocess.DEVNULL, text=True, timeout=1.5
         )
-        for line in ss_out.splitlines():
-            if f"pid={pid}," in line:
-                m_port = re.search(r"127\.0\.0\.1:(\d+)", line)
-                if m_port:
-                    ports.append(int(m_port.group(1)))
+        for pid, csrf_token in rpc_processes:
+            ports: List[int] = []
+            for line in ss_out.splitlines():
+                if f"pid={pid}," in line:
+                    m_port = re.search(r"(?:127\.0\.0\.1|\[::1\]):(\d+)", line)
+                    if m_port:
+                        ports.append(int(m_port.group(1)))
+            if ports:
+                process_ports.append((csrf_token, ports))
     except Exception:
         pass
 
-    if not ports:
+    if not process_ports:
         return None
 
     ctx = ssl._create_unverified_context()
     summary_data: Optional[Dict[str, Any]] = None
     resp_data: Optional[Dict[str, Any]] = None
 
-    for port in ports:
-        for scheme in ("http", "https"):
+    for csrf_token, ports in process_ports:
+        for port in ports:
+            for scheme in ("http", "https"):
             # 1. Call RetrieveUserQuotaSummary (exact source of Antigravity IDE's Usage panel!)
-            q_url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
-            q_req = urllib.request.Request(
-                q_url,
-                data=b"{}",
-                headers={
-                    "Content-Type": "application/json",
-                    "Connect-Protocol-Version": "1",
-                    "X-Codeium-Csrf-Token": csrf_token,
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(
-                    q_req,
-                    timeout=1.2,
-                    context=ctx if scheme == "https" else None,
-                ) as q_resp:
-                    summary_data = json.loads(q_resp.read().decode("utf-8"))
-                    break
-            except Exception:
-                continue
+                q_url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+                q_req = urllib.request.Request(
+                    q_url,
+                    data=b"{}",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Connect-Protocol-Version": "1",
+                        "X-Codeium-Csrf-Token": csrf_token,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(
+                        q_req,
+                        timeout=1.2,
+                        context=ctx if scheme == "https" else None,
+                    ) as q_resp:
+                        summary_data = json.loads(q_resp.read().decode("utf-8"))
+                        break
+                except Exception:
+                    continue
+            if summary_data is not None:
+                break
         if summary_data is not None:
             break
 
-    # If RetrieveUserQuotaSummary succeeded, parse 100% verbatim groups & buckets
-    if isinstance(summary_data, dict):
-        raw_groups = summary_data.get("response", {}).get("groups", [])
-        if isinstance(raw_groups, list) and raw_groups:
-            agy_groups: List[Dict[str, Any]] = []
-            session_best_pct = 0.0
-            session_reset_ts: Optional[int] = None
-            weekly_best_pct = 0.0
-            weekly_reset_ts: Optional[int] = None
+    parsed_summary = parse_antigravity_quota_summary(summary_data, now)
+    if parsed_summary is not None:
+        return parsed_summary
 
-            for grp in raw_groups:
-                if not isinstance(grp, dict):
-                    continue
-                g_title = str(grp.get("displayName", ""))
-                g_desc = str(grp.get("description", ""))
-                items: List[Dict[str, Any]] = []
-
-                for b in grp.get("buckets", []):
-                    if not isinstance(b, dict):
-                        continue
-                    rem_frac = float(b.get("remainingFraction", 1.0))
-                    rem_pct = max(0, min(100, int(round(rem_frac * 100.0))))
-                    used_pct = max(0.0, min(100.0, (1.0 - rem_frac) * 100.0))
-                    rst_ts = _parse_iso_timestamp(b.get("resetTime"))
-                    win = str(b.get("window", ""))
-                    b_desc = str(b.get("description", ""))
-
-                    if win == "5h":
-                        if used_pct >= session_best_pct:
-                            session_best_pct = used_pct
-                            if rst_ts:
-                                session_reset_ts = int(rst_ts)
-                    else:
-                        if used_pct >= weekly_best_pct:
-                            weekly_best_pct = used_pct
-                            if rst_ts:
-                                weekly_reset_ts = int(rst_ts)
-
-                    items.append(
-                        {
-                            "bucket_id": str(b.get("bucketId", "")),
-                            "title": str(b.get("displayName", "")),
-                            "subtitle": b_desc,
-                            "remaining_percent": rem_pct,
-                            "reset_time": int(rst_ts) if rst_ts else None,
-                            "window": win,
-                        }
-                    )
-
-                agy_groups.append(
-                    {
-                        "group_title": g_title,
-                        "group_description": g_desc,
-                        "items": items,
-                    }
+    for csrf_token, ports in process_ports:
+        for port in ports:
+            for scheme in ("http", "https"):
+                url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
+                req = urllib.request.Request(
+                    url,
+                    data=b"{}",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Connect-Protocol-Version": "1",
+                        "X-Codeium-Csrf-Token": csrf_token,
+                    },
+                    method="POST",
                 )
-
-            primary = RateLimitWindow(
-                label="5h",
-                used_percent=round(session_best_pct, 1),
-                window_minutes=300,
-                resets_at=session_reset_ts or int(now + 5 * 3600),
-                is_estimated=False,
-            )
-            secondary = RateLimitWindow(
-                label="7d",
-                used_percent=round(weekly_best_pct, 1),
-                window_minutes=10080,
-                resets_at=weekly_reset_ts or int(now + 7 * 86400),
-                is_estimated=False,
-            )
-            return primary, secondary, agy_groups
-
-    for port in ports:
-        for scheme in ("http", "https"):
-            url = f"{scheme}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
-            req = urllib.request.Request(
-                url,
-                data=b"{}",
-                headers={
-                    "Content-Type": "application/json",
-                    "Connect-Protocol-Version": "1",
-                    "X-Codeium-Csrf-Token": csrf_token,
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(
-                    req,
-                    timeout=1.2,
-                    context=ctx if scheme == "https" else None,
-                ) as resp:
-                    resp_data = json.loads(resp.read().decode("utf-8"))
-                    break
-            except Exception:
-                continue
+                try:
+                    with urllib.request.urlopen(
+                        req,
+                        timeout=1.2,
+                        context=ctx if scheme == "https" else None,
+                    ) as resp:
+                        resp_data = json.loads(resp.read().decode("utf-8"))
+                        break
+                except Exception:
+                    continue
+            if resp_data is not None:
+                break
         if resp_data is not None:
             break
 
@@ -1023,12 +995,7 @@ def _fetch_antigravity_live_rpc_usage(
     weekly_best_pct = -1.0
     weekly_reset_ts: Optional[int] = None
 
-    gemini_5h_rem = 100
-    gemini_5h_rst: Optional[int] = None
-    claude_gpt_5h_rem = 100
-    claude_gpt_5h_rst: Optional[int] = None
-    argon_weekly_rem = 100
-    argon_weekly_rst: Optional[int] = None
+    group_items: Dict[str, Dict[Tuple[str, int, int], Dict[str, Any]]] = {}
 
     for cfg in configs:
         if not isinstance(cfg, dict):
@@ -1045,16 +1012,39 @@ def _fetch_antigravity_live_rpc_usage(
             continue
 
         if "Argon" in label:
-            argon_weekly_rem = min(argon_weekly_rem, rem_pct)
-            argon_weekly_rst = int(rst_ts)
+            group_title = "Gemini 4 Argon"
         elif "Claude" in label or "GPT" in label:
-            claude_gpt_5h_rem = min(claude_gpt_5h_rem, rem_pct)
-            claude_gpt_5h_rst = int(rst_ts)
-        elif "Gemini" in label:
-            gemini_5h_rem = min(gemini_5h_rem, rem_pct)
-            gemini_5h_rst = int(rst_ts)
+            group_title = "Claude and GPT models"
+        else:
+            group_title = "Gemini Models"
 
-        if (rst_ts - now) <= 86400:
+        quota_label = str(qi.get("window", qi.get("period", ""))).lower()
+        is_weekly = (
+            "week" in quota_label
+            or "7d" in quota_label
+            or "Argon" in label
+            or (rst_ts - now) > 6 * 3600
+        )
+        window = "7d" if is_weekly else "5h"
+        item_title = (
+            "Gemini 4 Argon Weekly Limit"
+            if group_title == "Gemini 4 Argon" and is_weekly
+            else ("Weekly Limit Remaining" if is_weekly else "Five Hour Limit Remaining")
+        )
+        item = {
+            "title": item_title,
+            "subtitle": _format_agy_refresh_text(int(rst_ts), now, is_weekly)
+            if rem_pct < 100
+            else "",
+            "remaining_percent": rem_pct,
+            "reset_time": int(rst_ts),
+            "window": window,
+        }
+        group_items.setdefault(group_title, {})[
+            (window, int(rst_ts), rem_pct)
+        ] = item
+
+        if not is_weekly:
             if used_pct > session_best_pct:
                 session_best_pct = used_pct
                 session_reset_ts = int(rst_ts)
@@ -1070,65 +1060,24 @@ def _fetch_antigravity_live_rpc_usage(
         label="5h",
         used_percent=round(max(0.0, session_best_pct), 1),
         window_minutes=300,
-        resets_at=session_reset_ts or int(now + 5 * 3600),
+        resets_at=session_reset_ts,
         is_estimated=False,
     )
     secondary = RateLimitWindow(
         label="7d",
         used_percent=round(max(0.0, weekly_best_pct), 1),
         window_minutes=10080,
-        resets_at=weekly_reset_ts or int(now + 7 * 86400),
+        resets_at=weekly_reset_ts,
         is_estimated=False,
     )
 
-    agy_groups = [
-        {
-            "group_title": "Gemini Models",
-            "items": [
-                {
-                    "title": "Weekly Limit Remaining",
-                    "subtitle": "You have used some of your weekly limit, it will fully refresh in 6 days, 19 hours.",
-                    "remaining_percent": 99,
-                },
-                {
-                    "title": "Five Hour Limit Remaining",
-                    "subtitle": _format_agy_refresh_text(gemini_5h_rst, now, is_weekly=False)
-                    if gemini_5h_rem < 100
-                    else "",
-                    "remaining_percent": gemini_5h_rem,
-                },
-            ],
-        },
-        {
-            "group_title": "Claude and GPT models",
-            "items": [
-                {
-                    "title": "Weekly Limit Remaining",
-                    "subtitle": "",
-                    "remaining_percent": 100,
-                },
-                {
-                    "title": "Five Hour Limit Remaining",
-                    "subtitle": _format_agy_refresh_text(claude_gpt_5h_rst, now, is_weekly=False)
-                    if claude_gpt_5h_rem < 100
-                    else "",
-                    "remaining_percent": claude_gpt_5h_rem,
-                },
-            ],
-        },
-        {
-            "group_title": "Gemini 4 Argon",
-            "items": [
-                {
-                    "title": "Gemini 4 Argon Weekly Limit",
-                    "subtitle": _format_agy_refresh_text(argon_weekly_rst, now, is_weekly=True)
-                    if argon_weekly_rem < 100
-                    else "",
-                    "remaining_percent": argon_weekly_rem,
-                }
-            ],
-        },
-    ]
+    agy_groups = []
+    for group_title in ("Gemini Models", "Claude and GPT models", "Gemini 4 Argon"):
+        items = list(group_items.get(group_title, {}).values())
+        if not items:
+            continue
+        items.sort(key=lambda item: 0 if item["window"] == "7d" else 1)
+        agy_groups.append({"group_title": group_title, "items": items})
     return primary, secondary, agy_groups
 
 
@@ -1137,6 +1086,7 @@ def detect_antigravity(
     now_epoch: Optional[float] = None,
     quota_5h_tokens: int = 1_000_000,
     quota_7d_tokens: int = 5_000_000,
+    live_only: bool = False,
 ) -> EngineUsage:
     """Detect Google Antigravity (agy) and fetch live language_server quota + SQLite stats."""
     home = home_dir or Path.home()
@@ -1156,6 +1106,19 @@ def detect_antigravity(
         status="installed" if installed else "not_found",
     )
     if not installed or not agy_dir.is_dir():
+        return usage
+
+    if live_only:
+        live_agy = _fetch_antigravity_live_rpc_usage(now) if home_dir is None else None
+        if live_agy is None:
+            usage.status = "unavailable"
+            usage.metric_label = "Open Antigravity to load live usage"
+            return usage
+        usage.primary_quota, usage.secondary_quota, groups = live_agy
+        usage.extra = {"agy_groups": groups}
+        usage.model_or_plan = "Antigravity live quota"
+        usage.status = "active"
+        usage.metric_label = "Live quota"
         return usage
 
     cutoff_5h = now - (5 * 3600)
@@ -1277,6 +1240,7 @@ def detect_antigravity(
 def detect_qoder(
     home_dir: Optional[Path] = None,
     now_epoch: Optional[float] = None,
+    live_only: bool = False,
 ) -> EngineUsage:
     """Detect Qoder CLI / IDE installation and parse usage or configured modules."""
     home = home_dir or Path.home()
@@ -1304,7 +1268,9 @@ def detect_qoder(
     # Check if qoder_dir has real files or session logs (ignore symlink-only skill dirs when no binary is installed)
     has_session_or_real_files = False
     if qoder_dir is not None:
-        if list(qoder_dir.glob("**/*.jsonl")) or list(qoder_dir.glob("*.json")):
+        if live_only:
+            has_session_or_real_files = True
+        elif list(qoder_dir.glob("**/*.jsonl")) or list(qoder_dir.glob("*.json")):
             has_session_or_real_files = True
         elif home_dir is not None:
             # In unit test fixtures with explicit home_dir
@@ -1323,6 +1289,12 @@ def detect_qoder(
         status="installed" if installed else "not_found",
     )
     if not installed or qoder_dir is None:
+        return usage
+
+    if live_only:
+        usage.status = "unavailable"
+        usage.model_or_plan = "No verified live quota source"
+        usage.metric_label = "Live usage unavailable"
         return usage
 
     cutoff_5h = now - (5 * 3600)
@@ -1479,15 +1451,39 @@ def collect_usage_snapshot(
     now_epoch: Optional[float] = None,
     include_extra: bool = False,
     force_refresh: bool = False,
+    live_only: bool = False,
 ) -> UsageSnapshot:
     """Run all engine detectors and return a unified UsageSnapshot."""
     now = now_epoch if now_epoch is not None else time.time()
-    engines: List[EngineUsage] = [
-        detect_claude_code(home_dir=home_dir, now_epoch=now, force_refresh=force_refresh),
-        detect_codex(home_dir=home_dir, now_epoch=now, force_refresh=force_refresh),
-        detect_antigravity(home_dir=home_dir, now_epoch=now),
-        detect_qoder(home_dir=home_dir, now_epoch=now),
+    detector_calls = [
+        lambda: detect_claude_code(
+            home_dir=home_dir,
+            now_epoch=now,
+            force_refresh=force_refresh,
+            live_only=live_only,
+        ),
+        lambda: detect_codex(
+            home_dir=home_dir,
+            now_epoch=now,
+            force_refresh=force_refresh,
+            live_only=live_only,
+        ),
+        lambda: detect_antigravity(
+            home_dir=home_dir,
+            now_epoch=now,
+            live_only=live_only,
+        ),
+        lambda: detect_qoder(
+            home_dir=home_dir,
+            now_epoch=now,
+            live_only=live_only,
+        ),
     ]
+    if live_only:
+        with ThreadPoolExecutor(max_workers=len(detector_calls)) as pool:
+            engines = list(pool.map(lambda call: call(), detector_calls))
+    else:
+        engines = [call() for call in detector_calls]
     if include_extra:
         engines.extend(detect_additional_engines(home_dir=home_dir, now_epoch=now))
 

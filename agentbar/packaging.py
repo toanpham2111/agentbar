@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -25,16 +26,37 @@ from .detectors import collect_usage_snapshot
 from .menubar import create_tray_icon_image
 
 
+DEBIAN_RUNTIME_DEPENDENCIES = (
+    "python3 (>= 3.8), python3-gi, python3-pil, gir1.2-gtk-3.0, "
+    "gir1.2-ayatanaappindicator3-0.1"
+)
+
+
+def validate_release_version(version: str) -> str:
+    """Validate a stable semantic version accepted by Debian package metadata."""
+    normalized = version.strip()
+    if normalized.startswith("v"):
+        normalized = normalized[1:]
+    if not re.fullmatch(r"\d+\.\d+\.\d+", normalized):
+        raise ValueError("Release version must use MAJOR.MINOR.PATCH")
+    return normalized
+
+
 def generate_app_icons(project_root: Path) -> Dict[str, Path]:
-    """Generate 256x256 PNG and multi-size ICO icons in assets/."""
+    """Use the branded PNG and generate its multi-size Windows ICO variant."""
+    from PIL import Image
+
     assets_dir = project_root / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     png_path = assets_dir / "agentbar.png"
     ico_path = assets_dir / "agentbar.ico"
 
-    snap = collect_usage_snapshot()
-    img = create_tray_icon_image(snap, size=256)
-    img.save(png_path, format="PNG")
+    if png_path.is_file():
+        img = Image.open(png_path).convert("RGBA")
+    else:
+        snap = collect_usage_snapshot()
+        img = create_tray_icon_image(snap, size=256)
+        img.save(png_path, format="PNG")
     img.save(
         ico_path,
         format="ICO",
@@ -69,6 +91,91 @@ def build_zipapp_binary(project_root: Path) -> Path:
 
     target_bin.chmod(target_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return target_bin
+
+
+def build_linux_deb(
+    project_root: Path,
+    version: str,
+    output_dir: Optional[Path] = None,
+) -> Path:
+    """Build a click-installable Debian package for the GTK menu-bar app."""
+    release_version = validate_release_version(version)
+    if platform.system().lower() != "linux":
+        raise RuntimeError("The Debian package must be built on Linux")
+    if shutil.which("dpkg-deb") is None:
+        raise RuntimeError("dpkg-deb is required to build the Linux installer")
+
+    root = project_root.resolve()
+    destination = (output_dir or (root / "release")).resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    icons = generate_app_icons(root)
+    bundled_binary = build_zipapp_binary(root)
+    architecture = subprocess.check_output(
+        ["dpkg", "--print-architecture"], text=True, timeout=5
+    ).strip()
+    package_path = destination / f"Kio-Usage-Monitoring_{release_version}_{architecture}.deb"
+
+    with tempfile.TemporaryDirectory() as stage_tmp:
+        stage = Path(stage_tmp) / "kio-usage-monitoring"
+        control_dir = stage / "DEBIAN"
+        bin_dir = stage / "usr" / "bin"
+        apps_dir = stage / "usr" / "share" / "applications"
+        icon_dir = stage / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps"
+        provider_dir = stage / "usr" / "share" / "kio-usage-monitoring" / "providers"
+        for directory in (control_dir, bin_dir, apps_dir, icon_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        installed_binary = bin_dir / "kio-usage-monitoring"
+        shutil.copy2(bundled_binary, installed_binary)
+        installed_binary.chmod(0o755)
+        (bin_dir / "agentbar").symlink_to("kio-usage-monitoring")
+        shutil.copy2(icons["png"], icon_dir / "kio-usage-monitoring.png")
+
+        provider_source = root / "assets" / "providers"
+        if provider_source.is_dir():
+            shutil.copytree(provider_source, provider_dir)
+
+        desktop_entry = """[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Kio Usage Monitoring
+GenericName=AI Usage Monitor
+Comment=Monitor AI provider usage from the system menu bar
+Exec=/usr/bin/kio-usage-monitoring start
+Icon=kio-usage-monitoring
+Terminal=false
+Categories=Development;Utility;Monitor;
+Keywords=AI;Claude;Codex;Antigravity;Qoder;Usage;
+StartupNotify=false
+"""
+        (apps_dir / "kio-usage-monitoring.desktop").write_text(
+            desktop_entry, encoding="utf-8"
+        )
+        installed_size = max(
+            1,
+            sum(path.stat().st_size for path in stage.rglob("*") if path.is_file())
+            // 1024,
+        )
+        control_text = f"""Package: kio-usage-monitoring
+Version: {release_version}
+Section: utils
+Priority: optional
+Architecture: {architecture}
+Depends: {DEBIAN_RUNTIME_DEPENDENCIES}
+Installed-Size: {installed_size}
+Maintainer: KIO Digital
+Description: Lightweight AI usage monitor for the Linux menu bar
+ Monitors verified usage signals for Claude Code, OpenAI Codex,
+ Google Antigravity, and Qoder without a dashboard window.
+"""
+        (control_dir / "control").write_text(control_text, encoding="utf-8")
+        subprocess.run(
+            ["dpkg-deb", "--build", "--root-owner-group", str(stage), str(package_path)],
+            check=True,
+            timeout=60,
+        )
+
+    return package_path
 
 
 def build_macos_app_bundle(
@@ -112,7 +219,7 @@ def build_macos_app_bundle(
     <key>CFBundleName</key>
     <string>AgentBar</string>
     <key>CFBundleDisplayName</key>
-    <string>AgentBar AI Usage Monitor</string>
+    <string>Kio Usage Monitoring</string>
     <key>CFBundleIdentifier</key>
     <string>dev.agentbar.monitor</string>
     <key>CFBundleVersion</key>
@@ -141,11 +248,11 @@ def create_linux_desktop_entry(
     return f"""[Desktop Entry]
 Version=1.0
 Type=Application
-Name=AgentBar AI Monitor
-GenericName=AI Coding Engine Usage Bar
-Comment=Chạy ngầm theo dõi Quota của Claude Code, Codex, Antigravity, Qoder trên thanh Menu Bar
+Name=Kio Usage Monitoring
+GenericName=AI Usage Monitor
+Comment=Monitor Claude Code, Codex, Antigravity, and Qoder usage from the menu bar
 Exec={binary_path} start
-Icon={icon_png}
+Icon=kio-usage-monitoring
 Terminal=false
 Categories=Development;Utility;Monitor;
 Keywords=AI;Claude;Codex;Antigravity;Qoder;Token;Usage;Settings;
@@ -153,19 +260,19 @@ StartupNotify=false
 Actions=ToggleFloatingBar;OpenSettings;StopDaemon;TerminalWatch;
 
 [Desktop Action ToggleFloatingBar]
-Name=👁 Hiện / Ẩn Thanh Bar Góc Dưới (Show/Hide Floating Bar)
+Name=👁 Show / Hide Floating Bar
 Exec={binary_path} toggle-bar
 
 [Desktop Action OpenSettings]
-Name=⚙ Mở Cài Đặt (Settings)
+Name=⚙ Open Settings
 Exec={binary_path} settings
 
 [Desktop Action StopDaemon]
-Name=⏹ Tắt Ứng Dụng Chạy Ngầm (Stop)
+Name=⏹ Stop Background App
 Exec={binary_path} stop
 
 [Desktop Action TerminalWatch]
-Name=📊 Mở Bảng Theo Dõi Trực Tiếp (Terminal TUI)
+Name=📊 Open Live Terminal Monitor
 Exec={binary_path} watch
 Terminal=true
 """
@@ -203,11 +310,26 @@ def install_desktop_app(
         installed_bin.chmod(0o755)
         result["cli_installed"] = str(installed_bin)
 
+        installed_icon = home / ".local" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "kio-usage-monitoring.png"
+        installed_icon.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icons["png"], installed_icon)
+        result["icon_installed"] = str(installed_icon)
+
+        provider_source = root / "assets" / "providers"
+        provider_target = home / ".local" / "share" / "agentbar" / "providers"
+        if provider_source.is_dir():
+            provider_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(provider_source, provider_target, dirs_exist_ok=True)
+            result["provider_icons_installed"] = str(provider_target)
+
         desktop_content = create_linux_desktop_entry(installed_bin, icons["png"])
 
-        # 2. Install to ~/Desktop/AgentBar.desktop
+        # 2. Install the branded desktop shortcut
         if desk.is_dir():
-            desk_file = desk / "AgentBar.desktop"
+            desk_file = desk / "Kio Usage Monitoring.desktop"
+            legacy_desk_file = desk / "AgentBar.desktop"
+            if legacy_desk_file.is_file() and legacy_desk_file != desk_file:
+                legacy_desk_file.replace(desk_file)
             desk_file.write_text(desktop_content, encoding="utf-8")
             desk_file.chmod(0o755)
             # Mark as trusted on Ubuntu GNOME so double-click works immediately
@@ -223,10 +345,13 @@ def install_desktop_app(
                     pass
             result["desktop_shortcut"] = str(desk_file)
 
-        # 3. Install to ~/.local/share/applications/agentbar.desktop
+        # 3. Install the branded app menu entry
         apps_dir = home / ".local" / "share" / "applications"
         apps_dir.mkdir(parents=True, exist_ok=True)
-        app_entry = apps_dir / "agentbar.desktop"
+        app_entry = apps_dir / "kio-usage-monitoring.desktop"
+        legacy_app_entry = apps_dir / "agentbar.desktop"
+        if legacy_app_entry.is_file() and legacy_app_entry != app_entry:
+            legacy_app_entry.replace(app_entry)
         app_entry.write_text(desktop_content, encoding="utf-8")
         app_entry.chmod(0o755)
         if shutil.which("update-desktop-database"):

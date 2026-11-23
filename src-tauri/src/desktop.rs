@@ -20,6 +20,7 @@ use crate::{
     services::{
         collector::{CollectorService, parse_provider_id},
         scheduler::CollectorScheduler,
+        tray_label::format_tray_label,
     },
 };
 
@@ -28,6 +29,7 @@ pub struct AppState {
     repository: UsageRepository,
     settings: RwLock<AppSettings>,
     alert_rules: RwLock<Vec<AlertRule>>,
+    _scheduler: CollectorScheduler,
 }
 
 #[tauri::command]
@@ -172,8 +174,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = MenuBuilder::new(app)
         .items(&[&open, &refresh, &settings, &quit])
         .build()?;
-    TrayIconBuilder::with_id("main")
+    let mut tray = TrayIconBuilder::with_id("main")
         .menu(&menu)
+        .title("KIO · Loading")
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
@@ -186,7 +189,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<AppState>();
                     let snapshots = state.collector.refresh_all().await;
-                    let _ = app.emit("usage:updated", snapshots);
+                    update_tray_usage(&app, &snapshots);
                 });
             }
             "quit" => app.exit(0),
@@ -201,9 +204,20 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             {
                 show_main(tray.app_handle());
             }
-        })
-        .build(app)?;
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
     Ok(())
+}
+
+fn update_tray_usage(app: &AppHandle, snapshots: &[ProviderSnapshot]) {
+    let label = format_tray_label(snapshots);
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(Some(label));
+    }
+    let _ = app.emit("usage:updated", snapshots);
 }
 
 fn show_main(app: &AppHandle) {
@@ -226,15 +240,23 @@ pub fn run() {
                 tauri::async_runtime::block_on(repository.get_settings()).unwrap_or_default();
             let collector =
                 CollectorService::new(Arc::new(ProviderRegistry::default()), repository.clone());
-            let _scheduler =
-                CollectorScheduler::start(collector.clone(), settings.refresh_interval_minutes);
+            setup_tray(app)?;
+            let app_handle = app.handle().clone();
+            let scheduler = tauri::async_runtime::block_on(async {
+                CollectorScheduler::start_with_callback(
+                    collector.clone(),
+                    settings.refresh_interval_minutes,
+                    move |snapshots| update_tray_usage(&app_handle, &snapshots),
+                )
+            })
+            .map_err(std::io::Error::other)?;
             app.manage(AppState {
                 collector,
                 repository,
                 settings: RwLock::new(settings),
                 alert_rules: RwLock::new(AlertRule::defaults()),
+                _scheduler: scheduler,
             });
-            setup_tray(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {

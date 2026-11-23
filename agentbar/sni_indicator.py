@@ -141,6 +141,9 @@ class LinuxTopPanelIndicator:
         on_toggle_floating_bar: Callable[[], None],
         on_refresh: Callable[[], None],
         on_quit: Callable[[], None],
+        indicator_id: str = "agentbar",
+        instance_index: int = 1,
+        activate_tab_id: Optional[str] = None,
     ) -> None:
         from gi.repository import Gio, GLib
 
@@ -154,6 +157,9 @@ class LinuxTopPanelIndicator:
         self.on_toggle_floating_bar = on_toggle_floating_bar
         self.on_refresh = on_refresh
         self.on_quit = on_quit
+        self.indicator_id = indicator_id
+        self.instance_index = instance_index
+        self.activate_tab_id = activate_tab_id
 
         self.revision = 1
         self.menu_items: List[Dict[str, Any]] = []
@@ -172,8 +178,8 @@ class LinuxTopPanelIndicator:
         items: List[Dict[str, Any]] = [
             {
                 "id": 1,
-                "label": "📊 Mở Bảng Tổng Hợp (All Engines)",
-                "action": lambda: self.on_activate_tab("all"),
+                "label": "Show / Hide Usage",
+                "action": self.on_toggle_popover,
             },
         ]
         next_id = 2
@@ -195,22 +201,22 @@ class LinuxTopPanelIndicator:
                 {"id": next_id, "type": "separator"},
                 {
                     "id": next_id + 1,
-                    "label": "👁 Hiện / Ẩn Thanh Bar Góc Dưới (Show/Hide Floating Bar)",
+                    "label": "👁 Show / Hide Floating Bar",
                     "action": self.on_toggle_floating_bar,
                 },
                 {
                     "id": next_id + 2,
-                    "label": "⚙ Cài Đặt (Settings)...",
+                    "label": "⚙ Settings...",
                     "action": lambda: self.on_activate_tab("settings"),
                 },
                 {
                     "id": next_id + 3,
-                    "label": "↻ Làm Mới Ngay (Refresh Now)",
+                    "label": "↻ Refresh Now",
                     "action": self.on_refresh,
                 },
                 {
                     "id": next_id + 4,
-                    "label": "✕ Thoát Chạy Ngầm (Quit)",
+                    "label": "✕ Quit",
                     "action": self.on_quit,
                 },
             ]
@@ -221,7 +227,14 @@ class LinuxTopPanelIndicator:
     def _start_dbus_service(self) -> None:
         Gio = self.Gio
         try:
-            self.conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+            flags = (
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
+            )
+            self.conn = Gio.DBusConnection.new_for_address_sync(
+                address, flags, None, None
+            )
             sni_info = Gio.DBusNodeInfo.new_for_xml(SNI_NODE_XML).interfaces[0]
             menu_info = Gio.DBusNodeInfo.new_for_xml(DBUSMENU_NODE_XML).interfaces[0]
 
@@ -240,7 +253,7 @@ class LinuxTopPanelIndicator:
                 None,
             )
 
-            bus_name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
+            bus_name = f"org.kde.StatusNotifierItem-{os.getpid()}-{self.instance_index}"
             self.bus_name_id = Gio.bus_own_name_on_connection(
                 self.conn,
                 bus_name,
@@ -316,7 +329,7 @@ class LinuxTopPanelIndicator:
                     (
                         "org.kde.StatusNotifierItem",
                         {
-                            "Id": GLib.Variant("s", "agentbar"),
+                            "Id": GLib.Variant("s", self.indicator_id),
                             "Status": GLib.Variant("s", "Active"),
                             "XAyatanaLabel": GLib.Variant("s", self.label),
                         },
@@ -353,9 +366,9 @@ class LinuxTopPanelIndicator:
         if prop_name == "Category":
             return v("s", "ApplicationStatus")
         if prop_name == "Id":
-            return v("s", "agentbar")
+            return v("s", self.indicator_id)
         if prop_name == "Title":
-            return v("s", "AgentBar")
+            return v("s", self.indicator_id)
         if prop_name == "Status":
             return v("s", "Active")
         if prop_name == "WindowId":
@@ -377,7 +390,7 @@ class LinuxTopPanelIndicator:
         if prop_name == "XAyatanaLabelGuide":
             return v("s", "")
         if prop_name == "XAyatanaOrderingIndex":
-            return v("u", 0)
+            return v("u", self.instance_index)
         return None
 
     def _on_sni_method_call(
@@ -396,8 +409,27 @@ class LinuxTopPanelIndicator:
             "XAyatanaSecondaryActivate",
             "ContextMenu",
         ):
-            self.GLib.idle_add(self.on_toggle_popover)
+            if self.activate_tab_id:
+                self.GLib.idle_add(self.on_activate_tab, self.activate_tab_id)
+            else:
+                self.GLib.idle_add(self.on_toggle_popover)
         invocation.return_value(None)
+
+    def close(self) -> None:
+        if self.bus_name_id is not None:
+            self.Gio.bus_unown_name(self.bus_name_id)
+            self.bus_name_id = None
+        if self.conn is not None:
+            try:
+                if self.sni_reg_id is not None:
+                    self.conn.unregister_object(self.sni_reg_id)
+                if self.menu_reg_id is not None:
+                    self.conn.unregister_object(self.menu_reg_id)
+                self.conn.close_sync(None)
+            except Exception:
+                pass
+            self.conn = None
+        self.registered = False
 
     def _on_menu_get_property(
         self,
