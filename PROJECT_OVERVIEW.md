@@ -1,4 +1,10 @@
-# ⚡ AgentBar — Tài Liệu Tổng Quan Dự Án (Project Overview)
+# AgentBar Legacy — Tài liệu tham chiếu
+
+> **Trạng thái:** Tài liệu bên dưới mô tả ứng dụng Python cũ và chỉ được giữ lại để
+> tham chiếu trong quá trình chuyển đổi. Sản phẩm đang phát triển hiện tại là
+> **KIO Usage Monitor** (Tauri 2 + Rust + React). Xem `README.md` và thư mục `docs/`
+> để biết kiến trúc, nguồn dữ liệu và chính sách bảo mật đang áp dụng. Các cơ chế
+> OAuth/RPC riêng tư được mô tả bên dưới không thuộc bản KIO mới.
 
 **AgentBar** là ứng dụng chạy ngầm đa nền tảng (**Linux**, **Windows**, **macOS**) và công cụ **Terminal CLI/TUI** giúp tự động nhận diện các AI Coding Engine được cài trên máy (**Claude Code**, **OpenAI Codex CLI**, **Google Antigravity**, **Qoder**, **Cursor**, **Aider**) và hiển thị trực tiếp phần trăm Quota / Usage thực tế theo thời gian thực ngay trên **Thanh Bar hệ thống** mà không cần mở từng ứng dụng hay trình duyệt web.
 

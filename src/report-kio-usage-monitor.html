@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KIO Usage Monitor — Báo cáo nghiệm thu</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0b0f14; color: #edf2f7; }
+      body { max-width: 1180px; margin: auto; padding: 48px 24px 80px; }
+      h1, h2 { letter-spacing: -0.03em; }
+      h1 { font-size: clamp(2rem, 6vw, 4rem); margin-bottom: 8px; }
+      h2 { margin-top: 48px; }
+      p, li { color: #aeb9c6; line-height: 1.7; }
+      code { color: #f7c65d; }
+      .badge { display: inline-block; padding: 6px 10px; border: 1px solid #395067; border-radius: 999px; color: #78dba9; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+      .card { padding: 22px; border: 1px solid #24313f; border-radius: 16px; background: #111821; }
+      .shot { overflow: hidden; border: 1px solid #24313f; border-radius: 16px; background: #111821; }
+      .shot img { display: block; width: 100%; height: auto; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 14px; border-bottom: 1px solid #24313f; text-align: left; vertical-align: top; }
+      th { color: #f7c65d; }
+      .warn { color: #ffd08a; }
+    </style>
+  </head>
+  <body>
+    <span class="badge">Migration MVP · 2026-11-23</span>
+    <h1>KIO Usage Monitor</h1>
+    <p>Báo cáo nghiệm thu dựa trên kết quả test và ảnh chụp Playwright thực tế. Ứng dụng không có tài khoản admin hay URL đăng nhập vì toàn bộ dữ liệu hoạt động local-first trên thiết bị.</p>
+
+    <h2>Thông tin bàn giao</h2>
+    <div class="grid">
+      <section class="card"><strong>Ứng dụng</strong><p>Tauri 2 + Rust + React + TypeScript + SQLite</p></section>
+      <section class="card"><strong>Admin</strong><p>Không áp dụng — không có backend cloud hoặc tài khoản quản trị.</p></section>
+      <section class="card"><strong>Dữ liệu</strong><p>Local-only; không đọc cookie trình duyệt, kho credentials hoặc private OAuth/RPC.</p></section>
+    </div>
+
+    <h2>Before / After</h2>
+    <table>
+      <thead><tr><th>Trước</th><th>Sau</th></tr></thead>
+      <tbody>
+        <tr><td>Ứng dụng Python/Tkinter và tài liệu có cơ chế private OAuth/RPC.</td><td>Tauri 2/Rust/React, adapter độc lập và trạng thái unavailable minh bạch.</td></tr>
+        <tr><td>UI desktop cũ, khó kiểm thử responsive.</td><td>Dashboard responsive, light/dark, semantic navigation, kiểm thử 375/768/1440px.</td></tr>
+        <tr><td>Lưu trữ rời rạc và quota fallback thiếu độ tin cậy.</td><td>SQLite migration 11 bảng, dữ liệu không biết giữ nguyên <code>null</code>, không bịa quota.</td></tr>
+        <tr><td>Đóng gói chủ yếu theo host hiện tại.</td><td>CI native bundle cho Linux, Windows và macOS; release signing để cấu hình sau.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Changelog</h2>
+    <ul>
+      <li>Thêm shell Tauri, system tray, close-to-tray, scheduler và autostart foundation.</li>
+      <li>Thêm 6 provider adapters; Codex và Claude đọc usage log cục bộ có test fixture.</li>
+      <li>Thêm dashboard, analytics, providers, alerts, settings và typed command layer.</li>
+      <li>Thêm SQLite migrations, repository, cost estimator và event deduplication.</li>
+      <li>Thêm unit, component, adapter, database, E2E và workflow CI đa nền tảng.</li>
+    </ul>
+
+    <h2>Kết quả xác minh</h2>
+    <ul>
+      <li>Rust: 13/13 test; rustfmt và Clippy strict pass.</li>
+      <li>Frontend: 6/6 test; TypeScript strict, production build và npm audit pass.</li>
+      <li>Browser E2E: 6/6 test tại 375px, 768px và 1440px; không overflow hoặc console error.</li>
+      <li class="warn">Native Linux bundle chưa chạy trên host này do thiếu GLib/WebKitGTK/librsvg development packages. Windows/macOS chờ GitHub native runners xác minh.</li>
+    </ul>
+
+    <h2>Ảnh Playwright thực tế</h2>
+    <div class="grid">
+      <figure class="shot"><img src="../docs/screenshots/dashboard-desktop-1440.png" width="1440" height="1210" alt="Dashboard desktop 1440px" /></figure>
+      <figure class="shot"><img src="../docs/screenshots/dashboard-tablet-768.png" width="768" height="1719" alt="Dashboard tablet 768px" /></figure>
+      <figure class="shot"><img src="../docs/screenshots/dashboard-mobile-375.png" width="375" height="2275" alt="Dashboard mobile 375px" /></figure>
+    </div>
+  </body>
+</html>
