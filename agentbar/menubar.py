@@ -29,6 +29,7 @@ from .models import (
     UsageSnapshot,
     format_reset_countdown,
 )
+from .refresh_guard import UiRefreshThrottle
 from .sni_indicator import LinuxTopPanelIndicator
 
 
@@ -649,6 +650,7 @@ def run_gtk_menubar(
             self.codex_recent_tab: str = "5h"
             self.notified_engines: Set[str] = set()
             self.timer_source_id: Optional[int] = None
+            self.refresh_throttle = UiRefreshThrottle()
 
             # 1. Bottom-Right Floating Bar Pill (can be shown/hidden at will)
             self.pill_win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -972,8 +974,13 @@ def run_gtk_menubar(
                 pass
 
         def refresh_ui(self, force_refresh: bool = False) -> bool:
-            self._render_ui()
-            if not self.refresh_in_progress:
+            decision = self.refresh_throttle.decide(
+                now=time.monotonic(),
+                refresh_in_progress=self.refresh_in_progress,
+            )
+            if decision.render:
+                self._render_ui()
+            if decision.fetch:
                 self.refresh_in_progress = True
                 worker = threading.Thread(
                     target=self._refresh_snapshot_worker,

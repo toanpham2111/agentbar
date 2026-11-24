@@ -168,6 +168,10 @@ class LinuxTopPanelIndicator:
         self.bus_name_id: Optional[int] = None
         self.sni_reg_id: Optional[int] = None
         self.menu_reg_id: Optional[int] = None
+        self._last_panel_fingerprint: Optional[
+            tuple[str, tuple[tuple[str, str], ...]]
+        ] = None
+        self._last_engine_lines: tuple[tuple[str, str], ...] = ()
 
         self._rebuild_default_menu_items()
         self._start_dbus_service()
@@ -297,16 +301,40 @@ class LinuxTopPanelIndicator:
                 )
             except Exception:
                 pass
-        self.update_panel(self.label)
+        self._emit_panel_signals()
         return False
 
     def update_panel(
         self, new_label: str, engine_lines: Optional[List[Dict[str, str]]] = None
     ) -> None:
         """Update the text label and icon in the Linux GNOME Top Panel."""
-        GLib = self.GLib
+        normalized_lines = (
+            tuple(
+                (str(line.get("engine_id", "")), str(line.get("label", "")))
+                for line in engine_lines
+            )
+            if engine_lines is not None
+            else self._last_engine_lines
+        )
+        fingerprint = (str(new_label), normalized_lines)
+        if fingerprint == self._last_panel_fingerprint:
+            return
+
         self.label = new_label
-        self._rebuild_default_menu_items(engine_lines)
+        self._last_engine_lines = normalized_lines
+        self._last_panel_fingerprint = fingerprint
+        self._rebuild_default_menu_items(
+            [
+                {"engine_id": engine_id, "label": label}
+                for engine_id, label in normalized_lines
+            ]
+        )
+
+        self._emit_panel_signals()
+
+    def _emit_panel_signals(self) -> None:
+        """Notify the desktop shell after panel state has actually changed."""
+        GLib = self.GLib
 
         if self.conn is None:
             return
