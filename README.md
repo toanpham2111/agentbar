@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/kio-mark.svg" alt="Logo KIO" width="96" />
+  <img src="assets/agentbar.png" alt="Logo KIO" width="128" />
 </p>
 
 <div align="center">
