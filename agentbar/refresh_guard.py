@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -51,3 +51,20 @@ class UiRefreshThrottle:
             self._last_fetch_at = now
 
         return RefreshDecision(render=render, fetch=fetch)
+
+
+class PopoverRenderCache:
+    """Track whether visible popover content needs to be rebuilt."""
+
+    _EMPTY = object()
+
+    def __init__(self) -> None:
+        self._last_content_key: Any = self._EMPTY
+
+    def should_rebuild(self, visible: bool, content_key: Any) -> bool:
+        if not visible:
+            return False
+        if self._last_content_key == content_key:
+            return False
+        self._last_content_key = content_key
+        return True

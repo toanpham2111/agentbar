@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import os
 import platform
-import shutil
 import signal
 import sys
 import threading
@@ -23,13 +22,14 @@ from .config import (
     write_current_pid,
 )
 from .detectors import collect_usage_snapshot
+from .file_cache import copy_file_if_changed
 from .models import (
     EngineUsage,
     RateLimitWindow,
     UsageSnapshot,
     format_reset_countdown,
 )
-from .refresh_guard import UiRefreshThrottle
+from .refresh_guard import PopoverRenderCache, UiRefreshThrottle
 from .sni_indicator import LinuxTopPanelIndicator
 
 
@@ -651,6 +651,8 @@ def run_gtk_menubar(
             self.notified_engines: Set[str] = set()
             self.timer_source_id: Optional[int] = None
             self.refresh_throttle = UiRefreshThrottle()
+            self.popover_render_cache = PopoverRenderCache()
+            self._dynamic_icon_fingerprint: Optional[Any] = None
 
             # 1. Bottom-Right Floating Bar Pill (can be shown/hidden at will)
             self.pill_win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
@@ -767,10 +769,39 @@ def run_gtk_menubar(
                 target = self.icon_cache_dir / "agentbar.png"
                 brand_icon = find_installed_brand_icon()
                 if brand_icon is not None:
-                    shutil.copy2(brand_icon, target)
+                    source_stat = brand_icon.stat()
+                    fingerprint = (
+                        "brand",
+                        str(brand_icon),
+                        source_stat.st_size,
+                        source_stat.st_mtime_ns,
+                    )
+                    if (
+                        fingerprint == self._dynamic_icon_fingerprint
+                        and target.is_file()
+                    ):
+                        return
+                    copy_file_if_changed(brand_icon, target)
                 else:
+                    fingerprint = (
+                        "usage",
+                        tuple(
+                            (
+                                engine.engine_id,
+                                engine.installed,
+                                round(engine.highest_quota_percent(), 1),
+                            )
+                            for engine in self.snapshot.engines
+                        ),
+                    )
+                    if (
+                        fingerprint == self._dynamic_icon_fingerprint
+                        and target.is_file()
+                    ):
+                        return
                     pil_img = create_tray_icon_image(self.snapshot, size=64)
                     pil_img.save(target, format="PNG")
+                self._dynamic_icon_fingerprint = fingerprint
             except Exception:
                 pass
 
@@ -783,7 +814,7 @@ def run_gtk_menubar(
                     continue
                 target = self.icon_cache_dir / f"agentbar-{source.stem}{source.suffix.lower()}"
                 try:
-                    shutil.copy2(source, target)
+                    copy_file_if_changed(source, target)
                 except OSError:
                     pass
 
@@ -808,7 +839,10 @@ def run_gtk_menubar(
                         on_activate_tab=self.open_specific_tab,
                         on_toggle_popover=self.on_toggle_popover,
                         on_toggle_floating_bar=self.toggle_floating_bar,
-                        on_refresh=lambda: self.refresh_ui(force_refresh=True),
+                        on_refresh=lambda: self.refresh_ui(
+                            force_refresh=True,
+                            force_render=True,
+                        ),
                         on_quit=lambda: Gtk.main_quit(),
                         indicator_id=f"agentbar-{engine_id}",
                         instance_index=index,
@@ -826,7 +860,7 @@ def run_gtk_menubar(
                 return
             self.selected_view = tab_id
             self.popover_visible = True
-            self.refresh_ui()
+            self.refresh_ui(force_render=True)
             self.pop_win.show_all()
             self._position_windows()
 
@@ -896,7 +930,10 @@ def run_gtk_menubar(
             menu.append(item_settings)
 
             item_refresh = Gtk.MenuItem(label="↻ Refresh Now")
-            item_refresh.connect("activate", lambda *_: self.refresh_ui())
+            item_refresh.connect(
+                "activate",
+                lambda *_: self.refresh_ui(force_refresh=True, force_render=True),
+            )
             menu.append(item_refresh)
 
             menu.append(Gtk.SeparatorMenuItem())
@@ -910,14 +947,14 @@ def run_gtk_menubar(
         def open_settings_view(self) -> None:
             self.selected_view = "settings"
             self.popover_visible = True
-            self.refresh_ui()
+            self.refresh_ui(force_render=True)
             self.pop_win.show_all()
             self._position_windows()
 
         def on_toggle_popover(self, *_args: Any) -> None:
             self.popover_visible = not self.popover_visible
             if self.popover_visible:
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
                 self.pop_win.show_all()
                 self._position_windows()
             else:
@@ -938,7 +975,7 @@ def run_gtk_menubar(
                 self.selected_view = "all"
             else:
                 self.selected_view = view_id
-            self.refresh_ui()
+            self.refresh_ui(force_render=True)
 
         def _check_notifications(self) -> None:
             if not self.config.desktop_notifications:
@@ -973,12 +1010,16 @@ def run_gtk_menubar(
             except Exception:
                 pass
 
-        def refresh_ui(self, force_refresh: bool = False) -> bool:
+        def refresh_ui(
+            self,
+            force_refresh: bool = False,
+            force_render: bool = False,
+        ) -> bool:
             decision = self.refresh_throttle.decide(
                 now=time.monotonic(),
                 refresh_in_progress=self.refresh_in_progress,
             )
-            if decision.render:
+            if force_render or decision.render:
                 self._render_ui()
             if decision.fetch:
                 self.refresh_in_progress = True
@@ -1045,6 +1086,18 @@ def run_gtk_menubar(
                 )
             for engine_id, indicator in self.sni_indicators.items():
                 indicator.update_panel(engine_values.get(engine_id, "--"), engine_menu_lines)
+
+            popover_key = (
+                self.selected_view,
+                repr(self.config),
+                self.snapshot.timestamp,
+            )
+            if not self.popover_render_cache.should_rebuild(
+                visible=self.popover_visible,
+                content_key=popover_key,
+            ):
+                self._position_windows()
+                return True
 
             for child in self.pop_root.get_children():
                 self.pop_root.remove(child)
@@ -1404,7 +1457,7 @@ def run_gtk_menubar(
                     "clicked",
                     lambda _b, m=mode_id: (
                         setattr(self, "codex_recent_tab", m),
-                        self.refresh_ui(),
+                        self.refresh_ui(force_render=True),
                     ),
                 )
                 seg_box.pack_start(mb, False, False, 0)
@@ -1517,7 +1570,7 @@ def run_gtk_menubar(
                 def _on_toggle_eng(_b: Any, eid: str = eng_id, cur: bool = is_on) -> None:
                     self.config.set_engine_enabled(eid, not cur)
                     save_config(self.config)
-                    self.refresh_ui()
+                    self.refresh_ui(force_render=True)
 
                 sec_eng.pack_start(
                     self._build_toggle_row(eng_name, eng_desc, is_on, _on_toggle_eng),
@@ -1539,7 +1592,7 @@ def run_gtk_menubar(
 
             def _toggle_floating(_b: Any) -> None:
                 self.toggle_floating_bar()
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_bg.pack_start(
                 self._build_toggle_row(
@@ -1556,7 +1609,7 @@ def run_gtk_menubar(
             def _toggle_autostart(_b: Any) -> None:
                 self.config.autostart_on_login = not self.config.autostart_on_login
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_bg.pack_start(
                 self._build_toggle_row(
@@ -1573,7 +1626,7 @@ def run_gtk_menubar(
             def _toggle_collapsed(_b: Any) -> None:
                 self.config.start_collapsed = not self.config.start_collapsed
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_bg.pack_start(
                 self._build_toggle_row(
@@ -1590,7 +1643,7 @@ def run_gtk_menubar(
             def _toggle_notify(_b: Any) -> None:
                 self.config.desktop_notifications = not self.config.desktop_notifications
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_bg.pack_start(
                 self._build_toggle_row(
@@ -1619,7 +1672,7 @@ def run_gtk_menubar(
                 self.config.refresh_interval_sec = val
                 save_config(self.config)
                 self._schedule_timer()
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_pref.pack_start(
                 self._build_segmented_row(
@@ -1637,7 +1690,7 @@ def run_gtk_menubar(
             def _set_threshold(val: int) -> None:
                 self.config.warning_threshold_percent = val
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_pref.pack_start(
                 self._build_segmented_row(
@@ -1655,7 +1708,7 @@ def run_gtk_menubar(
             def _set_pos(val: str) -> None:
                 self.config.bar_position = val
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_pref.pack_start(
                 self._build_segmented_row(
@@ -1673,7 +1726,7 @@ def run_gtk_menubar(
             def _set_metric(val: str) -> None:
                 self.config.bar_metric_mode = val
                 save_config(self.config)
-                self.refresh_ui()
+                self.refresh_ui(force_render=True)
 
             sec_pref.pack_start(
                 self._build_segmented_row(

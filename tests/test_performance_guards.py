@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
-from agentbar.refresh_guard import UiRefreshThrottle
+from agentbar.file_cache import copy_file_if_changed
+from agentbar.refresh_guard import PopoverRenderCache, UiRefreshThrottle
 from agentbar.sni_indicator import LinuxTopPanelIndicator
 
 
@@ -74,6 +77,58 @@ class TestUiRefreshThrottle(unittest.TestCase):
             with self.subTest(timestamp=value):
                 with self.assertRaises(ValueError):
                     throttle.decide(now=value, refresh_in_progress=False)
+
+
+class TestPopoverRenderCache(unittest.TestCase):
+    def test_hidden_popover_never_rebuilds(self) -> None:
+        cache = PopoverRenderCache()
+
+        self.assertFalse(cache.should_rebuild(visible=False, content_key=("all", 1)))
+        self.assertFalse(cache.should_rebuild(visible=False, content_key=("all", 2)))
+
+    def test_visible_popover_rebuilds_only_when_content_changes(self) -> None:
+        cache = PopoverRenderCache()
+
+        self.assertTrue(cache.should_rebuild(visible=True, content_key=("all", 1)))
+        self.assertFalse(cache.should_rebuild(visible=True, content_key=("all", 1)))
+        self.assertTrue(cache.should_rebuild(visible=True, content_key=("codex", 1)))
+        self.assertTrue(cache.should_rebuild(visible=True, content_key=("codex", 2)))
+
+    def test_none_is_a_valid_content_key(self) -> None:
+        cache = PopoverRenderCache()
+
+        self.assertTrue(cache.should_rebuild(visible=True, content_key=None))
+        self.assertFalse(cache.should_rebuild(visible=True, content_key=None))
+
+
+class TestFileCache(unittest.TestCase):
+    def test_missing_target_is_copied_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.bin"
+            target = Path(tmp) / "cache" / "target.bin"
+            source.write_bytes(b"logo")
+
+            self.assertTrue(copy_file_if_changed(source, target))
+            self.assertEqual(target.read_bytes(), b"logo")
+            self.assertFalse(copy_file_if_changed(source, target))
+
+    def test_same_size_changed_content_is_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.bin"
+            target = Path(tmp) / "target.bin"
+            source.write_bytes(b"new1")
+            target.write_bytes(b"old1")
+
+            self.assertTrue(copy_file_if_changed(source, target))
+            self.assertEqual(target.read_bytes(), b"new1")
+
+    def test_missing_source_raises_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                copy_file_if_changed(
+                    Path(tmp) / "missing.bin",
+                    Path(tmp) / "target.bin",
+                )
 
 
 class TestLinuxPanelIdempotence(unittest.TestCase):
