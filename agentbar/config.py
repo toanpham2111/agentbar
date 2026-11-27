@@ -221,12 +221,21 @@ def start_background_daemon(open_settings: bool = False) -> Tuple[bool, int]:
     entry_script = Path(sys.argv[0]).resolve()
     valid_entry_names = ("agentbar", "agentbar.py", "kio-usage-monitoring")
     if not entry_script.is_file() or entry_script.name not in valid_entry_names:
+        which_agentbar = shutil.which("agentbar")
+        which_kio = shutil.which("kio-usage-monitoring")
         candidates = (
+            Path(which_agentbar) if which_agentbar else None,
+            Path(which_kio) if which_kio else None,
             Path.home() / ".local" / "bin" / "agentbar",
             Path("/usr/bin/kio-usage-monitoring"),
-            Path("/home/toan/Toan/agentbar/agentbar.py"),
+            Path("/usr/local/bin/agentbar"),
+            Path(__file__).resolve().parent.parent / "agentbar.py",
         )
-        entry_script = next((path for path in candidates if path.is_file()), candidates[-1])
+        resolved_candidates = tuple(p for p in candidates if p is not None)
+        entry_script = next(
+            (path for path in resolved_candidates if path.is_file()),
+            Path(__file__).resolve().parent.parent / "agentbar.py",
+        )
     cmd = [sys.executable, str(entry_script), "bar"]
     cfg = load_config()
     if cfg.start_collapsed and not open_settings:

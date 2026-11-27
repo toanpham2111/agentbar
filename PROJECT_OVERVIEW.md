@@ -8,9 +8,9 @@
 
 **AgentBar** là ứng dụng chạy ngầm đa nền tảng (**Linux**, **Windows**, **macOS**) và công cụ **Terminal CLI/TUI** giúp tự động nhận diện các AI Coding Engine được cài trên máy (**Claude Code**, **OpenAI Codex CLI**, **Google Antigravity**, **Qoder**, **Cursor**, **Aider**) và hiển thị trực tiếp phần trăm Quota / Usage thực tế theo thời gian thực ngay trên **Thanh Bar hệ thống** mà không cần mở từng ứng dụng hay trình duyệt web.
 
-- **Thư mục dự án**: `/home/toan/Toan/agentbar`
-- **File thực thi độc lập**: `/home/toan/Toan/agentbar/dist/agentbar` (đã cài toàn cục tại `/home/toan/.local/bin/agentbar`)
-- **Biểu tượng Desktop**: `/home/toan/Desktop/AgentBar.desktop`
+- **Thư mục dự án**: `agentbar/` (thư mục gốc repository)
+- **File thực thi độc lập**: `dist/agentbar` (có thể cài toàn cục tại `~/.local/bin/agentbar`)
+- **Biểu tượng Desktop**: `~/Desktop/AgentBar.desktop`
 - **Cấu hình người dùng**: `~/.config/agentbar/settings.json`
 
 ---
@@ -89,10 +89,10 @@ Cửa sổ Popover được thiết kế tối giản trên nền tối (`#18181
 
 ---
 
-## 4. Cấu Trúc Thư Mục Dự Án (`/home/toan/Toan/agentbar`)
+## 4. Cấu Trúc Thư Mục Dự Án
 
 ```text
-/home/toan/Toan/agentbar/
+agentbar/
 ├── agentbar.py                 # Entry point chạy trực tiếp từ CLI
 ├── build_desktop_app.py        # Script đóng gói 1-click ra Desktop & App Menu
 ├── pyproject.toml              # Cấu hình Python package
@@ -147,6 +147,6 @@ agentbar --swiftbar         # Xuất plugin cho SwiftBar / xbar trên macOS
 agentbar --json             # Xuất toàn bộ dữ liệu dạng JSON
 
 # 4. Đóng gói lại ra Desktop & chạy kiểm thử
-python3 /home/toan/Toan/agentbar/build_desktop_app.py --autostart
-python3 -m unittest discover -s /home/toan/Toan/agentbar/tests -v
+python3 build_desktop_app.py --autostart
+python3 -m unittest discover -s tests -v
 ```

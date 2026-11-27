@@ -364,8 +364,8 @@ class TestAgentBar(unittest.TestCase):
             home = Path(tmp)
             (home / ".qoder").mkdir(parents=True)
             status_json = {
-                "name": "Toan Kio",
-                "email": "kio.toanpham@ant-intl.com",
+                "name": "Test Developer",
+                "email": "developer@example.com",
             }
             (home / ".qoder" / ".qoder-app-status.json").write_text(json.dumps(status_json), encoding="utf-8")
 
@@ -391,7 +391,7 @@ class TestAgentBar(unittest.TestCase):
             self.assertEqual(qoder_live.extra["qoder_remaining"], 5714)
             self.assertEqual(qoder_live.extra["qoder_badge"], "Enterprise")
             self.assertEqual(qoder_live.extra["qoder_plan"], "Shared Add-on")
-            self.assertEqual(qoder_live.extra["qoder_user_name"], "Toan Kio")
+            self.assertEqual(qoder_live.extra["qoder_user_name"], "Test Developer")
 
     def test_antigravity_quota_summary_preserves_all_limits(self) -> None:
         payload = {
@@ -470,8 +470,8 @@ class TestAgentBar(unittest.TestCase):
     def test_antigravity_process_selection_ignores_vscode_codeium(self) -> None:
         output = "\n".join(
             [
-                "toan 100 0 0 codeium/language_server --ide_name vscode --csrf_token wrong",
-                "toan 200 0 0 /opt/antigravity/language_server --database_dir /home/toan/.gemini/antigravity --csrf_token right",
+                "user 100 0 0 codeium/language_server --ide_name vscode --csrf_token wrong",
+                "user 200 0 0 /opt/antigravity/language_server --database_dir /tmp/test-gemini/.gemini/antigravity --csrf_token right",
             ]
         )
         self.assertEqual(find_antigravity_rpc_processes(output), [("200", "right")])
