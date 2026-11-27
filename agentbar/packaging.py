@@ -425,52 +425,50 @@ def install_desktop_app(
         if local_desk.is_dir() and local_desk not in target_desks:
             target_desks.append(local_desk)
 
+        import base64
+
+        def _run_ps_script(script_text: str) -> None:
+            try:
+                enc = base64.b64encode(script_text.encode("utf-16le")).decode("ascii")
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-EncodedCommand", enc],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+
         for d in target_desks:
             if not d.is_dir():
                 continue
             for lnk_name in ("Kio Usage Monitoring.lnk", "AgentBar.lnk"):
                 lnk_file = d / lnk_name
-                ps_cmd = (
-                    f"$ws = New-Object -ComObject WScript.Shell; "
-                    f"$s = $ws.CreateShortcut('{lnk_file}'); "
-                    f"$s.TargetPath = '{target_exe}'; "
-                    f"$s.Arguments = '\"{pyw_path}\"'; "
-                    f"$s.IconLocation = '{ico_path}'; "
-                    f"$s.WorkingDirectory = '{root}'; "
-                    f"$s.Save()"
+                ps_script = (
+                    f"$ws = New-Object -ComObject WScript.Shell\n"
+                    f"$s = $ws.CreateShortcut('{lnk_file}')\n"
+                    f"$s.TargetPath = '{target_exe}'\n"
+                    f"$s.Arguments = '\"{pyw_path}\"'\n"
+                    f"$s.IconLocation = '{ico_path}'\n"
+                    f"$s.WorkingDirectory = '{root}'\n"
+                    f"$s.Save()\n"
                 )
-                try:
-                    subprocess.run(
-                        ["powershell", "-NoProfile", "-Command", ps_cmd],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                except Exception:
-                    pass
+                _run_ps_script(ps_script)
             result["desktop_shortcut"] = str(d / "Kio Usage Monitoring.lnk")
 
         start_programs = home / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs"
         if start_programs.is_dir():
             start_lnk = start_programs / "Kio Usage Monitoring.lnk"
-            ps_cmd = (
-                f"$ws = New-Object -ComObject WScript.Shell; "
-                f"$s = $ws.CreateShortcut('{start_lnk}'); "
-                f"$s.TargetPath = '{target_exe}'; "
-                f"$s.Arguments = '\"{pyw_path}\"'; "
-                f"$s.IconLocation = '{ico_path}'; "
-                f"$s.WorkingDirectory = '{root}'; "
-                f"$s.Save()"
+            ps_script = (
+                f"$ws = New-Object -ComObject WScript.Shell\n"
+                f"$s = $ws.CreateShortcut('{start_lnk}')\n"
+                f"$s.TargetPath = '{target_exe}'\n"
+                f"$s.Arguments = '\"{pyw_path}\"'\n"
+                f"$s.IconLocation = '{ico_path}'\n"
+                f"$s.WorkingDirectory = '{root}'\n"
+                f"$s.Save()\n"
             )
-            try:
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_cmd],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                result["app_menu_shortcut"] = str(start_lnk)
-            except Exception:
-                pass
+            _run_ps_script(ps_script)
+            result["app_menu_shortcut"] = str(start_lnk)
 
     return result
