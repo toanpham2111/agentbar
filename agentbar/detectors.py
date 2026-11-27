@@ -82,8 +82,11 @@ def _parse_iso_timestamp(ts_val: Any) -> Optional[float]:
     return None
 
 
-def _read_live_cache(key: str, now: float) -> Optional[Dict[str, Any]]:
-    cache_file = Path.home() / ".cache" / "agentbar" / "live_usage_cache.json"
+def _read_live_cache(
+    key: str, now: float, home_dir: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    home = home_dir or Path.home()
+    cache_file = home / ".cache" / "agentbar" / "live_usage_cache.json"
     if not cache_file.is_file():
         return None
     try:
@@ -97,8 +100,11 @@ def _read_live_cache(key: str, now: float) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _write_live_cache(key: str, payload: Dict[str, Any], now: float) -> None:
-    cache_dir = Path.home() / ".cache" / "agentbar"
+def _write_live_cache(
+    key: str, payload: Dict[str, Any], now: float, home_dir: Optional[Path] = None
+) -> None:
+    home = home_dir or Path.home()
+    cache_dir = home / ".cache" / "agentbar"
     cache_file = cache_dir / "live_usage_cache.json"
     try:
         with _LIVE_CACHE_LOCK:
@@ -1237,9 +1243,157 @@ def detect_antigravity(
     return usage
 
 
+def _fetch_qoder_live_usage(
+    home_dir: Optional[Path] = None,
+    now: float = 0.0,
+    force_refresh: bool = False,
+) -> Optional[Tuple[RateLimitWindow, Optional[RateLimitWindow], str, Dict[str, Any]]]:
+    """Parse real live Qoder Enterprise/Shared Add-on quota from desktop app logs."""
+    cached: Optional[Dict[str, Any]] = None
+    if not force_refresh:
+        cached = _read_live_cache("qoder_live", now, home_dir=home_dir)
+
+    if cached is None:
+        home = home_dir or Path.home()
+        candidates = [
+            home / ".config" / "com.qoder.app.stable" / "logs",
+            home / ".config" / "Qoder" / "logs",
+            home / "Library" / "Application Support" / "com.qoder.app.stable" / "logs",
+            home / "Library" / "Application Support" / "Qoder" / "logs",
+        ]
+        if home_dir is None:
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                candidates.append(Path(appdata) / "com.qoder.app.stable" / "logs")
+                candidates.append(Path(appdata) / "Qoder" / "logs")
+
+        log_files: List[Path] = []
+        for c in candidates:
+            if c.is_dir():
+                try:
+                    log_files.extend(c.glob("*/main.log"))
+                except OSError:
+                    continue
+
+        if not log_files:
+            return None
+
+        try:
+            log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            pass
+
+        parsed_data: Optional[Dict[str, Any]] = None
+        for log_file in log_files[:3]:
+            try:
+                size = log_file.stat().st_size
+                read_size = min(size, 1048576)
+                with open(log_file, "rb") as fp:
+                    if size > read_size:
+                        fp.seek(size - read_size)
+                    chunk = fp.read().decode("utf-8", errors="replace")
+
+                for line in reversed(chunk.splitlines()):
+                    if "用量响应摘要" in line or "orgResourcePackage" in line:
+                        m = re.search(r'({.*})', line)
+                        if m:
+                            try:
+                                d = json.loads(m.group(1))
+                                if "qoderUsage" in d:
+                                    parsed_data = d
+                                    break
+                            except Exception:
+                                continue
+                if parsed_data:
+                    break
+            except Exception:
+                continue
+
+        if not parsed_data:
+            return None
+
+        cached = parsed_data
+        _write_live_cache("qoder_live", cached, now, home_dir=home_dir)
+
+    qu = cached.get("qoderUsage")
+    if not isinstance(qu, dict):
+        return None
+
+    user_type = str(qu.get("userType", "enterprise"))
+    expires_at_ms = qu.get("expiresAt")
+    expires_at_sec = int(expires_at_ms / 1000) if isinstance(expires_at_ms, (int, float)) and expires_at_ms > 0 else None
+
+    org_pkg = qu.get("orgResourcePackage")
+    user_quota = qu.get("userQuota")
+
+    used = 0.0
+    cap = 0.0
+    remaining = 0.0
+    percentage = 0.0
+    unit = "credits"
+    plan_name = "Shared Add-on"
+
+    if isinstance(org_pkg, dict) and org_pkg.get("available") and org_pkg.get("cap") not in ("missing", None):
+        used = float(org_pkg.get("used", 0) or 0)
+        cap = float(org_pkg.get("cap", 0) or 0)
+        remaining = float(org_pkg.get("remaining", 0) or 0)
+        percentage = float(org_pkg.get("percentage", 0) or 0) * 100.0
+        if percentage == 0.0 and cap > 0:
+            percentage = round((used / cap) * 100.0, 1)
+        unit = str(org_pkg.get("unit", "credits"))
+        plan_name = "Shared Add-on"
+    elif isinstance(user_quota, dict) and user_quota.get("total") not in ("missing", None):
+        used = float(user_quota.get("used", 0) or 0)
+        cap = float(user_quota.get("total", 0) or user_quota.get("cap", 0) or 0)
+        remaining = float(user_quota.get("remaining", 0) or 0)
+        percentage = float(user_quota.get("percentage", 0) or 0) * 100.0
+        if percentage == 0.0 and cap > 0:
+            percentage = round((used / cap) * 100.0, 1)
+        unit = str(user_quota.get("unit", "credits"))
+        plan_name = "Personal Plan"
+    else:
+        return None
+
+    user_name = "User"
+    email = ""
+    home = home_dir or Path.home()
+    status_file = home / ".qoder" / ".qoder-app-status.json"
+    if status_file.is_file():
+        try:
+            st = json.loads(status_file.read_text(encoding="utf-8"))
+            user_name = st.get("name", user_name)
+            email = st.get("email", email)
+        except Exception:
+            pass
+
+    primary = RateLimitWindow(
+        label="Credits",
+        used_percent=round(percentage, 1),
+        window_minutes=None,
+        resets_at=expires_at_sec,
+        is_estimated=False,
+    )
+
+    details = {
+        "qoder_user_type": user_type,
+        "qoder_badge": "Enterprise" if user_type.lower() == "enterprise" else user_type.capitalize(),
+        "qoder_plan": plan_name,
+        "qoder_used": int(used),
+        "qoder_cap": int(cap),
+        "qoder_remaining": int(remaining),
+        "qoder_unit": unit,
+        "qoder_expires_at": expires_at_sec,
+        "qoder_user_name": user_name,
+        "qoder_email": email,
+    }
+
+    return primary, None, f"{plan_name} ({details['qoder_badge']})", details
+
+
 def detect_qoder(
     home_dir: Optional[Path] = None,
     now_epoch: Optional[float] = None,
+    force_refresh: bool = False,
     live_only: bool = False,
 ) -> EngineUsage:
     """Detect Qoder CLI / IDE installation and parse usage or configured modules."""
@@ -1290,6 +1444,16 @@ def detect_qoder(
     )
     if not installed or qoder_dir is None:
         return usage
+
+    live_qoder = _fetch_qoder_live_usage(home_dir=home_dir, now=now, force_refresh=force_refresh)
+    if live_qoder is not None:
+        usage.primary_quota, usage.secondary_quota, plan_name, details = live_qoder
+        usage.model_or_plan = plan_name
+        usage.extra.update(details)
+        usage.status = "active"
+        usage.metric_label = f"{details['qoder_used']:,} / {details['qoder_cap']:,} {details['qoder_unit']}"
+        if live_only:
+            return usage
 
     if live_only:
         usage.status = "unavailable"
@@ -1372,28 +1536,36 @@ def detect_qoder(
     if rules_count:
         modules_summary.append(f"{rules_count} rules")
 
-    usage.model_or_plan = ", ".join(modules_summary) if modules_summary else "ready"
-    usage.status = "active" if tok_today > 0 else "installed"
-    usage.primary_quota = RateLimitWindow(
-        label="5h",
-        used_percent=round(min(100.0, (tok_5h / 500_000.0) * 100.0), 1),
-        window_minutes=300,
-        resets_at=int(now + 5 * 3600),
-        is_estimated=True,
-    )
-    usage.secondary_quota = RateLimitWindow(
-        label="7d",
-        used_percent=round(min(100.0, (tok_7d / 5_000_000.0) * 100.0), 1),
-        window_minutes=10080,
-        resets_at=int(now + 7 * 86400),
-        is_estimated=True,
-    )
-    usage.extra = {
+    if live_qoder is not None:
+        usage.primary_quota, usage.secondary_quota, plan_name, details = live_qoder
+        usage.model_or_plan = plan_name
+        usage.extra.update(details)
+        usage.status = "active"
+        usage.metric_label = f"{details['qoder_used']:,} / {details['qoder_cap']:,} {details['qoder_unit']}"
+    else:
+        usage.model_or_plan = ", ".join(modules_summary) if modules_summary else "ready"
+        usage.status = "active" if tok_today > 0 else "installed"
+        usage.primary_quota = RateLimitWindow(
+            label="5h",
+            used_percent=round(min(100.0, (tok_5h / 500_000.0) * 100.0), 1),
+            window_minutes=300,
+            resets_at=int(now + 5 * 3600),
+            is_estimated=True,
+        )
+        usage.secondary_quota = RateLimitWindow(
+            label="7d",
+            used_percent=round(min(100.0, (tok_7d / 5_000_000.0) * 100.0), 1),
+            window_minutes=10080,
+            resets_at=int(now + 7 * 86400),
+            is_estimated=True,
+        )
+    usage.extra.update({
         "agents_count": agents_count,
         "skills_count": skills_count,
         "rules_count": rules_count,
-    }
-    usage.metric_label = f"{format_tokens(tok_total)} tok" if tok_total > 0 else "ready"
+    })
+    if live_qoder is None:
+        usage.metric_label = f"{format_tokens(tok_total)} tok" if tok_total > 0 else "ready"
     return usage
 
 

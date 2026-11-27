@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import os
 import platform
@@ -460,7 +461,60 @@ window.agentbar-popover {
     color: #ededef;
     background-color: #2c2c31;
 }
+.badge-enterprise {
+    background-color: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+}
+.qoder-card {
+    background-color: #1c1c1f;
+    border: 1px solid #2a2a2e;
+    border-radius: 8px;
+    padding: 14px 16px;
+}
+.text-bold-white {
+    color: #ffffff;
+    font-weight: 600;
+}
 """
+
+
+def _create_hatched_meter_pixbuf(
+    percent: float,
+    width: int = 320,
+    height: int = 14,
+    fill_color: tuple = (168, 85, 247, 255),
+    track_color: tuple = (50, 50, 55, 255),
+) -> Any:
+    """Render a hatched vertical-ticks progress meter matching Qoder's native UI."""
+    from gi.repository import GdkPixbuf
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    clamped = max(0.0, min(100.0, percent))
+    tick_w = 2
+    gap = 2
+    pitch = tick_w + gap
+    num_ticks = max(1, width // pitch)
+    active_ticks = int(round((clamped / 100.0) * num_ticks))
+
+    for i in range(num_ticks):
+        x = i * pitch
+        c = fill_color if i < active_ticks else track_color
+        draw.rectangle([x, 1, x + tick_w - 1, height - 2], fill=c)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+    loader.write(buf.getvalue())
+    loader.close()
+    return loader.get_pixbuf()
 
 
 def _create_pill_bar_pixbuf(
@@ -1078,10 +1132,20 @@ def run_gtk_menubar(
                     else "--"
                 )
                 engine_values[eng.engine_id] = p_pct
+                if eng.engine_id == "qoder" and eng.extra.get("qoder_cap"):
+                    used = eng.extra.get("qoder_used", 0)
+                    cap = eng.extra.get("qoder_cap", 0)
+                    menu_label = f"{eng.name} — Credits: {p_pct} ({used:,}/{cap:,})"
+                elif eng.secondary_quota is not None:
+                    menu_label = f"{eng.name} — Session: {p_pct} · Week: {s_pct}"
+                else:
+                    p_label = eng.primary_quota.display_title if eng.primary_quota else "Session"
+                    menu_label = f"{eng.name} — {p_label}: {p_pct}"
+
                 engine_menu_lines.append(
                     {
                         "engine_id": eng.engine_id,
-                        "label": f"{eng.name} — Session: {p_pct} · Week: {s_pct}",
+                        "label": menu_label,
                     }
                 )
             for engine_id, indicator in self.sni_indicators.items():
@@ -1133,9 +1197,13 @@ def run_gtk_menubar(
                 )
                 usage_header.get_style_context().add_class("top-nav")
                 usage_title_text = (
-                    engines_to_show[0].name
-                    if self.selected_view != "all" and engines_to_show
-                    else "Usage"
+                    "My usage"
+                    if self.selected_view == "qoder"
+                    else (
+                        engines_to_show[0].name
+                        if self.selected_view != "all" and engines_to_show
+                        else "Usage"
+                    )
                 )
                 usage_title = Gtk.Label(label=usage_title_text, xalign=0)
                 usage_title.get_style_context().add_class("section-heading")
@@ -1153,6 +1221,8 @@ def run_gtk_menubar(
                         self.pop_root.pack_start(div, False, False, 0)
                     if e.engine_id == "antigravity" and e.extra.get("agy_groups"):
                         section = self._build_antigravity_full_tab(e)
+                    elif e.engine_id == "qoder" and e.extra.get("qoder_cap"):
+                        section = self._build_qoder_full_tab(e)
                     else:
                         section = self._build_minimal_engine_section(
                             e, show_header=(len(engines_to_show) > 1)
@@ -1549,6 +1619,97 @@ def run_gtk_menubar(
 
             return root
 
+        def _build_qoder_full_tab(self, e: EngineUsage) -> Any:
+            """Build the dedicated Qoder My Usage view matching native UI."""
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            root.get_style_context().add_class("engine-section")
+
+            # Main card
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            card.get_style_context().add_class("qoder-card")
+
+            # Top row: Plan title + Enterprise badge on left, Renewal text on right
+            top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+            plan_name = str(e.extra.get("qoder_plan", "Shared Add-on"))
+            title_lbl = Gtk.Label(label=plan_name, xalign=0)
+            title_lbl.get_style_context().add_class("row-title")
+            title_lbl.get_style_context().add_class("text-bold-white")
+            top_row.pack_start(title_lbl, False, False, 0)
+
+            badge_text = str(e.extra.get("qoder_badge", "Enterprise"))
+            badge_lbl = Gtk.Label(label=badge_text, xalign=0.5)
+            badge_lbl.get_style_context().add_class("badge-enterprise")
+            top_row.pack_start(badge_lbl, False, False, 0)
+
+            expires_ts = e.extra.get("qoder_expires_at")
+            if expires_ts:
+                dt = datetime.datetime.fromtimestamp(expires_ts, tz=datetime.timezone.utc)
+                months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                renew_text = f"Renews on {months[dt.month - 1]} {dt.day}, {dt.year}"
+            else:
+                renew_text = "Active Subscription"
+            renew_lbl = Gtk.Label(label=renew_text, xalign=1)
+            renew_lbl.get_style_context().add_class("row-subtitle")
+            top_row.pack_end(renew_lbl, False, False, 0)
+
+            card.pack_start(top_row, False, False, 0)
+
+            # Progress bar / hatched meter
+            used = e.extra.get("qoder_used", 0)
+            cap = e.extra.get("qoder_cap", 0)
+            remaining = e.extra.get("qoder_remaining", 0)
+            pct = e.primary_quota.used_percent if e.primary_quota else 0.0
+
+            meter_pixbuf = _create_hatched_meter_pixbuf(pct, width=320, height=14)
+            meter_img = Gtk.Image.new_from_pixbuf(meter_pixbuf)
+            meter_img.set_valign(Gtk.Align.CENTER)
+            meter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            meter_box.pack_start(meter_img, True, True, 0)
+            card.pack_start(meter_box, False, False, 0)
+
+            # Bottom row: "286 / 6,000 (used 5%) ⓘ" on left, "Remaining 5,714" on right
+            bot_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            used_str = f"{used:,} / {cap:,} (used {int(round(pct))}%)"
+            used_lbl = Gtk.Label(label=f"{used_str}  ⓘ", xalign=0)
+            used_lbl.set_tooltip_text("Enterprise shared add-on resource credits")
+            used_lbl.get_style_context().add_class("row-title")
+            bot_row.pack_start(used_lbl, False, False, 0)
+
+            rem_lbl = Gtk.Label(label=f"Remaining {remaining:,}", xalign=1)
+            rem_lbl.get_style_context().add_class("pct-normal")
+            bot_row.pack_end(rem_lbl, False, False, 0)
+
+            card.pack_start(bot_row, False, False, 0)
+            root.pack_start(card, False, False, 0)
+
+            # Secondary info: Account & modules
+            info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            user_name = e.extra.get("qoder_user_name", "")
+            email = e.extra.get("qoder_email", "")
+            if user_name or email:
+                acc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                acc_label = Gtk.Label(
+                    label=f"Account: {user_name} ({email})" if email else f"Account: {user_name}",
+                    xalign=0,
+                )
+                acc_label.get_style_context().add_class("row-subtitle")
+                info_box.pack_start(acc_label, False, False, 0)
+
+            skills_c = e.extra.get("skills_count", 0)
+            agents_c = e.extra.get("agents_count", 0)
+            rules_c = e.extra.get("rules_count", 0)
+            if skills_c or agents_c:
+                mod_label = Gtk.Label(
+                    label=f"Environment: {skills_c} skills · {agents_c} agents · {rules_c} rules",
+                    xalign=0,
+                )
+                mod_label.get_style_context().add_class("row-subtitle")
+                info_box.pack_start(mod_label, False, False, 0)
+
+            root.pack_start(info_box, False, False, 0)
+            return root
+
         def _build_settings_panel(self) -> Any:
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
@@ -1810,10 +1971,18 @@ def run_gtk_menubar(
                 hdr.get_style_context().add_class("engine-header")
                 box.pack_start(hdr, False, False, 0)
 
-            quotas = [
-                (e.primary_quota, "Current session"),
-                (e.secondary_quota, "This week"),
-            ]
+            if e.secondary_quota is not None:
+                p_title = e.primary_quota.display_title if e.primary_quota else "Current session"
+                s_title = e.secondary_quota.display_title if e.secondary_quota else "This week"
+                quotas = [
+                    (e.primary_quota, p_title),
+                    (e.secondary_quota, s_title),
+                ]
+            else:
+                p_title = e.primary_quota.display_title if e.primary_quota else "Current session"
+                quotas = [
+                    (e.primary_quota, p_title),
+                ]
             unavailable_message = (
                 "Open Antigravity to load live usage"
                 if e.engine_id == "antigravity"

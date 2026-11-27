@@ -359,6 +359,40 @@ class TestAgentBar(unittest.TestCase):
             self.assertEqual(qoder_u.extra["agents_count"], 1)
             self.assertEqual(qoder_u.extra["skills_count"], 2)
 
+    def test_detect_qoder_live_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".qoder").mkdir(parents=True)
+            status_json = {
+                "name": "Toan Kio",
+                "email": "kio.toanpham@ant-intl.com",
+            }
+            (home / ".qoder" / ".qoder-app-status.json").write_text(json.dumps(status_json), encoding="utf-8")
+
+            log_dir = home / ".config" / "com.qoder.app.stable" / "logs" / "20261125-test"
+            log_dir.mkdir(parents=True)
+            main_log = log_dir / "main.log"
+            log_line = (
+                '[2026-11-25T04:37:28.340Z] [INFO] [main] [Auth] [AccountUsage] 用量响应摘要 '
+                '{"operation":"account.getQuotaUsage","qoderUsage":{"userType":"enterprise","usageType":"credits",'
+                '"expiresAt":1795968000000,"orgResourcePackage":{"used":286,"remaining":5714,"percentage":0.05,"cap":6000,"available":true,"unit":"credits"}}}'
+            )
+            main_log.write_text(log_line, encoding="utf-8")
+
+            qoder_live = detect_qoder(home_dir=home, now_epoch=self.fixed_now, force_refresh=True, live_only=True)
+            self.assertTrue(qoder_live.installed)
+            self.assertEqual(qoder_live.status, "active")
+            self.assertIsNotNone(qoder_live.primary_quota)
+            self.assertFalse(qoder_live.primary_quota.is_estimated)
+            self.assertEqual(qoder_live.primary_quota.used_percent, 5.0)
+            self.assertEqual(qoder_live.primary_quota.label, "Credits")
+            self.assertEqual(qoder_live.extra["qoder_used"], 286)
+            self.assertEqual(qoder_live.extra["qoder_cap"], 6000)
+            self.assertEqual(qoder_live.extra["qoder_remaining"], 5714)
+            self.assertEqual(qoder_live.extra["qoder_badge"], "Enterprise")
+            self.assertEqual(qoder_live.extra["qoder_plan"], "Shared Add-on")
+            self.assertEqual(qoder_live.extra["qoder_user_name"], "Toan Kio")
+
     def test_antigravity_quota_summary_preserves_all_limits(self) -> None:
         payload = {
             "response": {

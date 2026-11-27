@@ -118,24 +118,32 @@ def ascii_progress_bar(percent: float, width: int = 24) -> str:
 class RateLimitWindow:
     """Represents a rate-limit or quota usage window (Current session or This week)."""
 
-    label: str  # e.g. "5h", "7d"
+    label: str  # e.g. "5h", "7d", "Credits"
     used_percent: float  # 0.0 to 100.0
-    window_minutes: int = 300
+    window_minutes: Optional[int] = 300
     resets_at: Optional[int] = None
     is_estimated: bool = False
 
     @property
     def is_weekly(self) -> bool:
-        return self.window_minutes >= 1440 or self.label in ("7d", "week", "weekly")
+        if self.window_minutes is not None:
+            return self.window_minutes >= 1440 or self.label in ("7d", "week", "weekly")
+        return self.label in ("7d", "week", "weekly")
 
     @property
     def display_title(self) -> str:
+        if self.label == "Credits":
+            return "Shared Add-on"
         return "This week" if self.is_weekly else "Current session"
 
     def reset_in(self, now_epoch: Optional[float] = None) -> str:
         return format_reset_countdown(self.resets_at, now_epoch=now_epoch)
 
     def reset_subtitle(self, now_epoch: Optional[float] = None) -> str:
+        if self.label == "Credits" and self.resets_at:
+            dt = datetime.datetime.fromtimestamp(self.resets_at)
+            months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            return f"Renews on {months[dt.month - 1]} {dt.day}, {dt.year}"
         return format_reset_clock_time(
             self.resets_at, is_weekly=self.is_weekly, now_epoch=now_epoch
         )
