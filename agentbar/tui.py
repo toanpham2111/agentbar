@@ -5,10 +5,14 @@ Matches the clean 'Current session / This week' usage layout.
 
 from __future__ import annotations
 
-import curses
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
+
+try:
+    import curses
+except ImportError:
+    curses = None  # type: ignore[assignment]
 
 from .detectors import collect_usage_snapshot
 from .models import UsageSnapshot, ascii_progress_bar
@@ -77,21 +81,27 @@ def run_live_watch(interval: float = 3.0) -> None:
         print(render_ansi_dashboard(snap, use_color=False))
         return
 
-    try:
-        curses.wrapper(_curses_main, interval)
-    except Exception:
+    if curses is not None:
         try:
-            while True:
-                snap = collect_usage_snapshot()
-                sys.stdout.write("\033[2J\033[H")
-                sys.stdout.write(render_ansi_dashboard(snap, use_color=True))
-                sys.stdout.flush()
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            print("")
+            curses.wrapper(_curses_main, interval)
+            return
+        except Exception:
+            pass
+
+    try:
+        while True:
+            snap = collect_usage_snapshot()
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.write(render_ansi_dashboard(snap, use_color=True))
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("")
 
 
-def _curses_main(stdscr: "curses._CursesWindow", interval: float) -> None:
+def _curses_main(stdscr: Any, interval: float) -> None:
+    if curses is None:
+        return
     curses.curs_set(0)
     stdscr.nodelay(True)
     if curses.has_colors():

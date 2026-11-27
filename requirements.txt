@@ -2,3 +2,4 @@
 # Optional cross-platform system tray dependencies for Windows / macOS / Linux:
 Pillow>=9.0.0
 pystray>=0.19.4
+windows-curses>=2.3.0; sys_platform == 'win32'
