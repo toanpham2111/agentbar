@@ -289,8 +289,31 @@ def install_desktop_app(
     bundled_bin = build_zipapp_binary(root)
 
     home = Path.home()
-    desk = desktop_dir or (home / "Desktop")
     sys_name = platform.system().lower()
+    desk = desktop_dir
+    if desk is None:
+        if sys_name.startswith("win"):
+            desk_candidates = []
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+                )
+                val, _ = winreg.QueryValueEx(key, "Desktop")
+                winreg.CloseKey(key)
+                expanded = os.path.expandvars(str(val))
+                if Path(expanded).is_dir():
+                    desk_candidates.append(Path(expanded))
+            except Exception:
+                pass
+            onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer") or os.environ.get("OneDriveCommercial")
+            if onedrive and (Path(onedrive) / "Desktop").is_dir():
+                desk_candidates.append(Path(onedrive) / "Desktop")
+            desk_candidates.append(home / "Desktop")
+            desk = next((d for d in desk_candidates if d.is_dir()), home / "Desktop")
+        else:
+            desk = home / "Desktop"
     result: Dict[str, str] = {
         "bundled_binary": str(bundled_bin),
         "icon_png": str(icons["png"]),
@@ -392,15 +415,52 @@ def install_desktop_app(
             encoding="utf-8",
         )
         result["windows_launcher"] = str(pyw_path)
-        if desk.is_dir():
-            lnk_path = desk / "AgentBar.lnk"
+        py_exe = Path(sys.executable)
+        pyw_exe = py_exe.with_name("pythonw.exe")
+        target_exe = str(pyw_exe) if pyw_exe.is_file() else str(py_exe)
+        ico_path = str(icons["ico"])
+
+        target_desks = [desk]
+        local_desk = home / "Desktop"
+        if local_desk.is_dir() and local_desk not in target_desks:
+            target_desks.append(local_desk)
+
+        for d in target_desks:
+            if not d.is_dir():
+                continue
+            for lnk_name in ("Kio Usage Monitoring.lnk", "AgentBar.lnk"):
+                lnk_file = d / lnk_name
+                ps_cmd = (
+                    f"$ws = New-Object -ComObject WScript.Shell; "
+                    f"$s = $ws.CreateShortcut('{lnk_file}'); "
+                    f"$s.TargetPath = '{target_exe}'; "
+                    f"$s.Arguments = '\"{pyw_path}\"'; "
+                    f"$s.IconLocation = '{ico_path}'; "
+                    f"$s.WorkingDirectory = '{root}'; "
+                    f"$s.Save()"
+                )
+                try:
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", ps_cmd],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            result["desktop_shortcut"] = str(d / "Kio Usage Monitoring.lnk")
+
+        start_programs = home / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        if start_programs.is_dir():
+            start_lnk = start_programs / "Kio Usage Monitoring.lnk"
             ps_cmd = (
-                f'$s=(New-Object -COM WScript.Shell).CreateShortcut("{lnk_path}");'
-                f'$s.TargetPath="pythonw.exe";'
-                f'$s.Arguments=\'"{pyw_path}"\';'
-                f'$s.IconLocation="{icons["ico"]}";'
-                f'$s.WorkingDirectory="{root}";'
-                f'$s.Save()'
+                f"$ws = New-Object -ComObject WScript.Shell; "
+                f"$s = $ws.CreateShortcut('{start_lnk}'); "
+                f"$s.TargetPath = '{target_exe}'; "
+                f"$s.Arguments = '\"{pyw_path}\"'; "
+                f"$s.IconLocation = '{ico_path}'; "
+                f"$s.WorkingDirectory = '{root}'; "
+                f"$s.Save()"
             )
             try:
                 subprocess.run(
@@ -409,7 +469,7 @@ def install_desktop_app(
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                result["desktop_shortcut"] = str(lnk_path)
+                result["app_menu_shortcut"] = str(start_lnk)
             except Exception:
                 pass
 
