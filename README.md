@@ -297,15 +297,15 @@ agentbar/
 - **Zero Remote Telemetry**: Kio never transmits prompt contents, source code, credentials, or telemetry to external servers.
 - **Verifiable Integrity**: If an agent is inactive or quota metrics are unavailable, Kio clearly reports `--` rather than guessing or interpolating numbers.
 
-For security reports and architecture details, refer to [`docs/SECURITY.md`](docs/SECURITY.md) and [`docs/PROVIDER_SPEC.md`](docs/PROVIDER_SPEC.md).
+For security reports and architecture details, refer to [`SECURITY.md`](SECURITY.md) and [`docs/PROVIDER_SPEC.md`](docs/PROVIDER_SPEC.md).
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, bug reports, and suggestions are welcome!
-Before submitting a pull request, please ensure that:
-1. All unit tests pass (`python3 -m unittest discover -s tests`).
+Contributions, bug reports, and suggestions are welcome! Please review our [Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request.
+Before opening a PR, ensure that:
+1. All unit and frontend tests pass (`python3 -m unittest discover -s tests -q` and `npm test`).
 2. Code follows existing styling conventions and maintains minimal diffs.
 3. Edge cases and error scenarios are covered with appropriate test fixtures.
 
