@@ -32,3 +32,34 @@ jobs:
           name: kio-usage-monitoring-linux-amd64
           path: release/*
           if-no-files-found: error
+
+  web-frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit and Component tests
+        run: npm test
+      - name: Build web application
+        run: npm run build
+
+  rust-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Check code formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy lints
+        run: cargo clippy --no-default-features --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Core tests
+        run: cargo test --no-default-features --manifest-path src-tauri/Cargo.toml
