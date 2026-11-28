@@ -250,12 +250,12 @@ Version=1.0
 Type=Application
 Name=Kio Usage Monitoring
 GenericName=AI Usage Monitor
-Comment=Monitor Claude Code, Codex, Antigravity, and Qoder usage from the menu bar
+Comment=Monitor Claude Code, Codex, Antigravity, Qoder, and System Resources from the menu bar
 Exec={binary_path} start
 Icon=kio-usage-monitoring
 Terminal=false
 Categories=Development;Utility;Monitor;
-Keywords=AI;Claude;Codex;Antigravity;Qoder;Token;Usage;Settings;
+Keywords=AI;Claude;Codex;Antigravity;Qoder;Token;Usage;Settings;System;CPU;RAM;Disk;
 StartupNotify=false
 Actions=ToggleFloatingBar;OpenSettings;StopDaemon;TerminalWatch;
 
