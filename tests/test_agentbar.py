@@ -116,6 +116,7 @@ class TestAgentBar(unittest.TestCase):
             patch("agentbar.detectors.detect_codex", side_effect=lambda **_: fake("codex")),
             patch("agentbar.detectors.detect_antigravity", side_effect=lambda **_: fake("antigravity")),
             patch("agentbar.detectors.detect_qoder", side_effect=lambda **_: fake("qoder")),
+            patch("agentbar.detectors.detect_system_resources", side_effect=lambda **_: fake("system")),
         ):
             started = time.perf_counter()
             snapshot = collect_usage_snapshot(live_only=True)
@@ -124,7 +125,7 @@ class TestAgentBar(unittest.TestCase):
         self.assertLess(elapsed, 0.24)
         self.assertEqual(
             [engine.engine_id for engine in snapshot.engines],
-            ["claude", "codex", "antigravity", "qoder"],
+            ["claude", "codex", "antigravity", "qoder", "system"],
         )
 
     def test_live_only_fixture_does_not_invent_quota(self) -> None:
@@ -574,6 +575,22 @@ class TestAgentBar(unittest.TestCase):
             self.assertEqual(loaded.refresh_interval_sec, 60)
             self.assertEqual(loaded.warning_threshold_percent, 90)
             self.assertEqual(loaded.bar_position, "center")
+
+    def test_detect_system_resources(self) -> None:
+        from agentbar.detectors import detect_system_resources
+        sys_res = detect_system_resources()
+        self.assertEqual(sys_res.engine_id, "system")
+        self.assertTrue(sys_res.installed)
+        self.assertEqual(sys_res.status, "active")
+        self.assertIsNotNone(sys_res.primary_quota)
+        self.assertIsNotNone(sys_res.secondary_quota)
+        self.assertIsNotNone(sys_res.tertiary_quota)
+        self.assertEqual(sys_res.primary_quota.custom_title, "CPU Usage")
+        self.assertEqual(sys_res.secondary_quota.custom_title, "Memory (RAM)")
+        self.assertEqual(sys_res.tertiary_quota.custom_title, "Disk Storage")
+        self.assertGreaterEqual(sys_res.primary_quota.used_percent, 0.0)
+        self.assertGreaterEqual(sys_res.secondary_quota.used_percent, 0.0)
+        self.assertGreaterEqual(sys_res.tertiary_quota.used_percent, 0.0)
 
 
 if __name__ == "__main__":

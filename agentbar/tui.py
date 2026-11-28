@@ -59,7 +59,7 @@ def render_ansi_dashboard(
         lines.append(f"  {c_bold}{e.name}{c_reset}")
         lines.append("")
 
-        for q in [e.primary_quota, e.secondary_quota]:
+        for q in [e.primary_quota, e.secondary_quota, getattr(e, "tertiary_quota", None)]:
             if q is None:
                 continue
             pct_int = int(round(q.used_percent))
@@ -138,7 +138,7 @@ def _curses_main(stdscr: Any, interval: float) -> None:
             safe_addstr(row, 2, e.name, curses.A_BOLD)
             row += 2
 
-            for q in [e.primary_quota, e.secondary_quota]:
+            for q in [e.primary_quota, e.secondary_quota, getattr(e, "tertiary_quota", None)]:
                 if q is None:
                     continue
                 pct_int = int(round(q.used_percent))

@@ -118,11 +118,13 @@ def ascii_progress_bar(percent: float, width: int = 24) -> str:
 class RateLimitWindow:
     """Represents a rate-limit or quota usage window (Current session or This week)."""
 
-    label: str  # e.g. "5h", "7d", "Credits"
+    label: str  # e.g. "5h", "7d", "Credits", "CPU", "RAM", "Disk"
     used_percent: float  # 0.0 to 100.0
     window_minutes: Optional[int] = 300
     resets_at: Optional[int] = None
     is_estimated: bool = False
+    custom_title: Optional[str] = None
+    custom_subtitle: Optional[str] = None
 
     @property
     def is_weekly(self) -> bool:
@@ -132,6 +134,8 @@ class RateLimitWindow:
 
     @property
     def display_title(self) -> str:
+        if self.custom_title:
+            return self.custom_title
         if self.label == "Credits":
             return "Shared Add-on"
         return "This week" if self.is_weekly else "Current session"
@@ -140,6 +144,8 @@ class RateLimitWindow:
         return format_reset_countdown(self.resets_at, now_epoch=now_epoch)
 
     def reset_subtitle(self, now_epoch: Optional[float] = None) -> str:
+        if self.custom_subtitle is not None:
+            return self.custom_subtitle
         if self.label == "Credits" and self.resets_at:
             dt = datetime.datetime.fromtimestamp(self.resets_at)
             months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -188,6 +194,7 @@ class EngineUsage:
     breakdown: TokenBreakdown = field(default_factory=TokenBreakdown)
     primary_quota: Optional[RateLimitWindow] = None
     secondary_quota: Optional[RateLimitWindow] = None
+    tertiary_quota: Optional[RateLimitWindow] = None
     estimated_cost_usd: float = 0.0
     sessions_total: int = 0
     sessions_today: int = 0
@@ -204,12 +211,20 @@ class EngineUsage:
             vals.append(self.primary_quota.used_percent)
         if self.secondary_quota is not None:
             vals.append(self.secondary_quota.used_percent)
+        if self.tertiary_quota is not None:
+            vals.append(self.tertiary_quota.used_percent)
         return max(vals) if vals else 0.0
 
     def menu_bar_badge(self, compact: bool = False) -> str:
         """Clean minimal badge for the top menu bar: e.g. 'Claude 48% · Codex 84%'."""
         if not self.installed:
             return ""
+        if self.engine_id == "system":
+            c = int(round(self.primary_quota.used_percent)) if self.primary_quota else 0
+            m = int(round(self.secondary_quota.used_percent)) if self.secondary_quota else 0
+            if compact:
+                return f"CPU:{c}%"
+            return f"CPU {c}% · RAM {m}%"
         p = int(round(self.primary_quota.used_percent)) if self.primary_quota else 0
         s = int(round(self.secondary_quota.used_percent)) if self.secondary_quota else 0
         shown = p if p > 0 else s

@@ -99,7 +99,7 @@ def _format_bar_from_config(snapshot: UsageSnapshot, cfg: AgentBarConfig) -> str
             continue
         live_quotas = [
             quota
-            for quota in (e.primary_quota, e.secondary_quota)
+            for quota in (e.primary_quota, e.secondary_quota, getattr(e, "tertiary_quota", None))
             if quota is not None and not quota.is_estimated
         ]
         if cfg.bar_metric_mode == "highest":
@@ -873,7 +873,7 @@ def run_gtk_menubar(
                     pass
 
         def _sync_sni_indicators(self) -> None:
-            engine_ids = ["claude", "codex", "antigravity", "qoder"]
+            engine_ids = ["claude", "codex", "antigravity", "qoder", "system"]
             desired = {
                 engine_id
                 for engine_id in engine_ids
@@ -1132,7 +1132,14 @@ def run_gtk_menubar(
                     else "--"
                 )
                 engine_values[eng.engine_id] = p_pct
-                if eng.engine_id == "qoder" and eng.extra.get("qoder_cap"):
+                if eng.engine_id == "system":
+                    d_pct = (
+                        f"{int(round(eng.tertiary_quota.used_percent))}%"
+                        if getattr(eng, "tertiary_quota", None) is not None
+                        else "--"
+                    )
+                    menu_label = f"{eng.name} — CPU: {p_pct} · RAM: {s_pct} · Disk: {d_pct}"
+                elif eng.engine_id == "qoder" and eng.extra.get("qoder_cap"):
                     used = eng.extra.get("qoder_used", 0)
                     cap = eng.extra.get("qoder_cap", 0)
                     menu_label = f"{eng.name} — Credits: {p_pct} ({used:,}/{cap:,})"
@@ -1724,6 +1731,7 @@ def run_gtk_menubar(
                 ("codex", "OpenAI Codex", "OpenAI live 5h & weekly rate limits"),
                 ("antigravity", "Antigravity", "Google Antigravity live language server quota"),
                 ("qoder", "Qoder", "Qoder CLI / IDE usage tracker"),
+                ("system", "System Resources", "Host CPU, RAM, and Disk storage usage"),
             ]
             for eng_id, eng_name, eng_desc in engine_meta:
                 is_on = self.config.is_engine_enabled(eng_id)
@@ -1971,18 +1979,15 @@ def run_gtk_menubar(
                 hdr.get_style_context().add_class("engine-header")
                 box.pack_start(hdr, False, False, 0)
 
+            quotas = []
+            if e.primary_quota is not None:
+                quotas.append((e.primary_quota, e.primary_quota.display_title))
             if e.secondary_quota is not None:
-                p_title = e.primary_quota.display_title if e.primary_quota else "Current session"
-                s_title = e.secondary_quota.display_title if e.secondary_quota else "This week"
-                quotas = [
-                    (e.primary_quota, p_title),
-                    (e.secondary_quota, s_title),
-                ]
-            else:
-                p_title = e.primary_quota.display_title if e.primary_quota else "Current session"
-                quotas = [
-                    (e.primary_quota, p_title),
-                ]
+                quotas.append((e.secondary_quota, e.secondary_quota.display_title))
+            if getattr(e, "tertiary_quota", None) is not None:
+                quotas.append((e.tertiary_quota, e.tertiary_quota.display_title))
+            if not quotas and e.primary_quota is not None:
+                quotas.append((e.primary_quota, "Current session"))
             unavailable_message = (
                 "Open Antigravity to load live usage"
                 if e.engine_id == "antigravity"

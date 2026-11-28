@@ -290,11 +290,12 @@ def run_win_mac_bottom_bar(
                 anchor="w",
             ).pack(fill="x", pady=(0, 8))
 
-            q1 = e.primary_quota or RateLimitWindow("5h", 0.0, 300)
-            q2 = e.secondary_quota or RateLimitWindow("7d", 0.0, 10080)
+            quotas = [q for q in [e.primary_quota, e.secondary_quota, getattr(e, "tertiary_quota", None)] if q is not None]
+            if not quotas:
+                quotas = [RateLimitWindow("5h", 0.0, 300)]
             thresh = float(self.config.warning_threshold_percent)
 
-            for q in [q1, q2]:
+            for q in quotas:
                 row = tk.Frame(parent, bg="#18181a")
                 row.pack(fill="x", pady=6)
 
@@ -381,6 +382,7 @@ def run_win_mac_bottom_bar(
                 ("codex", "OpenAI Codex"),
                 ("antigravity", "Antigravity"),
                 ("qoder", "Qoder"),
+                ("system", "System Resources"),
             ]:
                 is_on = self.config.is_engine_enabled(eng_id)
                 r = tk.Frame(parent, bg="#18181a")

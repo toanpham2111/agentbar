@@ -1618,6 +1618,189 @@ def detect_additional_engines(
     return extra_engines
 
 
+_last_cpu_sample: Dict[str, Any] = {}
+
+
+def detect_system_resources(now_epoch: Optional[float] = None) -> EngineUsage:
+    """Detect host system resources: CPU usage, RAM memory, and Disk storage."""
+    global _last_cpu_sample
+    now = now_epoch if now_epoch is not None else time.time()
+    cores = os.cpu_count() or 1
+    cpu_pct = 0.0
+
+    psutil_module = None
+    try:
+        import psutil
+        psutil_module = psutil
+    except ImportError:
+        pass
+
+    if psutil_module is not None:
+        try:
+            cpu_pct = float(psutil_module.cpu_percent(interval=None))
+            cores = psutil_module.cpu_count(logical=True) or cores
+        except Exception:
+            pass
+    elif platform.system() == "Linux":
+        try:
+            with open("/proc/stat", "r", encoding="utf-8") as f:
+                fields = [float(x) for x in f.readline().strip().split()[1:]]
+            idle = fields[3] + (fields[4] if len(fields) > 4 else 0.0)
+            total = sum(fields)
+            last = _last_cpu_sample.get("linux")
+            if last and (now - last["ts"]) >= 0.2:
+                dt = total - last["total"]
+                di = idle - last["idle"]
+                if dt > 0:
+                    cpu_pct = max(0.0, min(100.0, 100.0 * (1.0 - (di / dt))))
+            else:
+                time.sleep(0.03)
+                with open("/proc/stat", "r", encoding="utf-8") as f2:
+                    fields2 = [float(x) for x in f2.readline().strip().split()[1:]]
+                idle2 = fields2[3] + (fields2[4] if len(fields2) > 4 else 0.0)
+                total2 = sum(fields2)
+                dt = total2 - total
+                di = idle2 - idle
+                if dt > 0:
+                    cpu_pct = max(0.0, min(100.0, 100.0 * (1.0 - (di / dt))))
+            _last_cpu_sample["linux"] = {"idle": idle, "total": total, "ts": now}
+        except Exception:
+            pass
+
+    # 2. Memory (RAM)
+    mem_total_b = 0
+    mem_avail_b = 0
+    if psutil_module is not None:
+        try:
+            v = psutil_module.virtual_memory()
+            mem_total_b = v.total
+            mem_avail_b = v.available
+        except Exception:
+            pass
+    elif platform.system() == "Linux":
+        try:
+            info = {}
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        info[parts[0].strip()] = int(parts[1].split()[0])
+            mem_total_b = info.get("MemTotal", 0) * 1024
+            mem_avail_b = info.get("MemAvailable", 0) * 1024
+        except Exception:
+            pass
+    elif platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            mem_total_b = int(stat.ullTotalPhys)
+            mem_avail_b = int(stat.ullAvailPhys)
+        except Exception:
+            pass
+    elif platform.system() == "Darwin":
+        try:
+            p = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2)
+            mem_total_b = int(p.stdout.strip())
+            vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=2)
+            page_size = 4096
+            free_pages = 0
+            for line in vm.stdout.splitlines():
+                if "page size of" in line:
+                    page_size = int(line.split()[7])
+                elif "Pages free:" in line or "Pages speculative:" in line:
+                    free_pages += int(line.split()[2].rstrip("."))
+            mem_avail_b = free_pages * page_size
+        except Exception:
+            pass
+
+    if mem_total_b <= 0:
+        mem_total_b = 8 * (1024**3)
+        mem_avail_b = 4 * (1024**3)
+    mem_used_b = max(0, mem_total_b - mem_avail_b)
+    mem_pct = (mem_used_b / mem_total_b) * 100.0 if mem_total_b > 0 else 0.0
+
+    # 3. Disk Storage
+    try:
+        disk_total_b, disk_used_b, disk_free_b = shutil.disk_usage(os.path.abspath(os.sep))
+    except Exception:
+        disk_total_b, disk_used_b, disk_free_b = (100 * 1024**3, 50 * 1024**3, 50 * 1024**3)
+    disk_pct = (disk_used_b / disk_total_b) * 100.0 if disk_total_b > 0 else 0.0
+
+    mem_used_gb = mem_used_b / (1024**3)
+    mem_total_gb = mem_total_b / (1024**3)
+    mem_avail_gb = mem_avail_b / (1024**3)
+
+    disk_used_gb = disk_used_b / (1024**3)
+    disk_total_gb = disk_total_b / (1024**3)
+    disk_free_gb = disk_free_b / (1024**3)
+
+    cpu_q = RateLimitWindow(
+        label="CPU",
+        used_percent=round(cpu_pct, 1),
+        window_minutes=None,
+        custom_title="CPU Usage",
+        custom_subtitle=f"{cores} cores active",
+    )
+    mem_q = RateLimitWindow(
+        label="RAM",
+        used_percent=round(mem_pct, 1),
+        window_minutes=None,
+        custom_title="Memory (RAM)",
+        custom_subtitle=f"{mem_used_gb:.1f} GB / {mem_total_gb:.1f} GB ({mem_avail_gb:.1f} GB free)",
+    )
+    disk_q = RateLimitWindow(
+        label="Disk",
+        used_percent=round(disk_pct, 1),
+        window_minutes=None,
+        custom_title="Disk Storage",
+        custom_subtitle=f"{disk_used_gb:.1f} GB / {disk_total_gb:.1f} GB ({disk_free_gb:.1f} GB free)",
+    )
+
+    return EngineUsage(
+        engine_id="system",
+        name="System Resources",
+        short_name="Sys",
+        icon="💻",
+        installed=True,
+        binary_path=None,
+        data_dir=None,
+        model_or_plan=f"{cores} Cores · {mem_total_gb:.0f}GB RAM",
+        status="active",
+        primary_quota=cpu_q,
+        secondary_quota=mem_q,
+        tertiary_quota=disk_q,
+        metric_label="hardware",
+        extra={
+            "cpu_pct": round(cpu_pct, 1),
+            "cpu_cores": cores,
+            "mem_pct": round(mem_pct, 1),
+            "mem_used_gb": round(mem_used_gb, 1),
+            "mem_total_gb": round(mem_total_gb, 1),
+            "mem_avail_gb": round(mem_avail_gb, 1),
+            "disk_pct": round(disk_pct, 1),
+            "disk_used_gb": round(disk_used_gb, 1),
+            "disk_total_gb": round(disk_total_gb, 1),
+            "disk_free_gb": round(disk_free_gb, 1),
+        },
+    )
+
+
 def collect_usage_snapshot(
     home_dir: Optional[Path] = None,
     now_epoch: Optional[float] = None,
@@ -1650,6 +1833,7 @@ def collect_usage_snapshot(
             now_epoch=now,
             live_only=live_only,
         ),
+        lambda: detect_system_resources(now_epoch=now),
     ]
     if live_only:
         with ThreadPoolExecutor(max_workers=len(detector_calls)) as pool:

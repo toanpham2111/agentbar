@@ -160,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tab",
-        choices=["all", "claude", "codex", "antigravity", "qoder", "settings"],
+        choices=["all", "claude", "codex", "antigravity", "qoder", "system", "settings"],
         default=None,
         help="Open the Menu Bar Popover directly to a specific engine tab",
     )

@@ -12,7 +12,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-blue?logo=linux&logoColor=white)](#-installation)
 
-**Monitor real-time quotas for Claude Code, OpenAI Codex, Google Antigravity, and Qoder directly from your desktop menu bar.**<br>
+**Monitor real-time quotas for Claude Code, OpenAI Codex, Google Antigravity, Qoder, and Host System Resources directly from your desktop menu bar.**<br>
 *Lightweight, local-first, zero cloud dependencies, and strictly honest telemetry.*
 
 [🌱 Why Kio?](#-why-kio) • [🚀 Installation](#-installation) • [✨ Features](#-features) • [🔌 Supported Providers](#-supported-providers) • [⌨️ CLI & Integrations](#️-cli--integrations) • [🧪 Development](#-development) • [🔒 Privacy & Security](#-privacy--security)
@@ -54,11 +54,12 @@ Kio Usage Monitoring is a cross-platform desktop menu bar application (Linux, ma
 ## ✨ Features
 
 - **Native System Tray & Menu Bar Integration**: Minimalist indicators for Linux (GNOME/KDE/XFCE via SNI), macOS Menu Bar, and Windows Notification Area.
-- **Multi-Engine Quota Tracking**:
+- **Multi-Engine & Hardware Quota Tracking**:
   - **Claude Code**: Live session token window and rolling weekly rate limit.
   - **OpenAI Codex**: 5-hour rolling session window and weekly rate limits.
   - **Google Antigravity**: Real-time quota buckets read directly from the active local language server RPC.
   - **Qoder**: Enterprise Shared Add-on credit packages, usage breakdown, and renewal dates.
+  - **System Resources**: Live CPU load percentage, RAM memory allocation, and Disk storage capacity with zero external dependencies.
 - **Auto-Detection**: Dynamically detects installed CLI tools and desktop apps without manual path configuration.
 - **Live Watch & Status CLI**: Built-in interactive terminal dashboard (TUI), single-line summaries, and JSON streaming.
 - **Status Bar Integration**: Native output formats for **Waybar**, **Polybar**, **tmux**, and **SwiftBar** / **xbar**.
@@ -75,6 +76,7 @@ Kio Usage Monitoring is a cross-platform desktop menu bar application (Linux, ma
 | **OpenAI Codex** | ✅ | 5-Hour & Weekly limits | Local session state + OpenAI usage API | Auto-detected from local configuration |
 | **Google Antigravity** | ✅ | Dynamic quota buckets | Local Antigravity Language Server RPC | Active while Antigravity IDE/agent is running |
 | **Qoder** | ✅ | Enterprise credits & Renewal date | Qoder Desktop local session / OpenAPI log cache | Synchronizes Enterprise package quotas |
+| **System Resources** | ✅ | CPU, RAM, & Disk space | Native OS APIs (`/proc`, `GlobalMemoryStatusEx`, `sysctl`, `shutil`) | Local host hardware monitoring |
 
 > [!NOTE]
 > Google Antigravity telemetry requires the Antigravity application or language server to be open, as its local RPC server shuts down when the app is closed.
@@ -244,7 +246,8 @@ Preferences are stored locally in `~/.config/agentbar/settings.json`. You can mo
     "claude": true,
     "codex": true,
     "antigravity": true,
-    "qoder": true
+    "qoder": true,
+    "system": true
   }
 }
 ```

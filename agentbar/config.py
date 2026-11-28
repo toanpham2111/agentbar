@@ -36,6 +36,7 @@ class AgentBarConfig:
             "codex": True,
             "antigravity": True,
             "qoder": False,
+            "system": True,
         }
     )
     autostart_on_login: bool = False
